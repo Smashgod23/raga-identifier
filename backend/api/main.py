@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import pickle
 import json
+from huggingface_hub import hf_hub_download
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from predict import RagaNet, extract_features_from_audio
@@ -19,20 +20,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load model once at startup
+# Download model files from Hugging Face at startup
+REPO_ID = "Smashgod23/raga-identifier"
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(os.path.join(BASE_DIR, "models"), exist_ok=True)
 
-with open(os.path.join(BASE_DIR, "data", "classes.json")) as f:
+model_path  = hf_hub_download(repo_id=REPO_ID, filename="raga_model_best.pt", local_dir=os.path.join(BASE_DIR, "models"))
+scaler_path = hf_hub_download(repo_id=REPO_ID, filename="scaler.pkl",          local_dir=os.path.join(BASE_DIR, "models"))
+classes_path= hf_hub_download(repo_id=REPO_ID, filename="classes.json",        local_dir=os.path.join(BASE_DIR, "data"))
+
+with open(classes_path) as f:
     CLASSES = json.load(f)
 
-with open(os.path.join(BASE_DIR, "models", "scaler.pkl"), "rb") as f:
+with open(scaler_path, "rb") as f:
     SCALER = pickle.load(f)
 
 MODEL = RagaNet(input_dim=120, num_classes=len(CLASSES))
-MODEL.load_state_dict(torch.load(
-    os.path.join(BASE_DIR, "models", "raga_model_best.pt"),
-    map_location="cpu"
-))
+MODEL.load_state_dict(torch.load(model_path, map_location="cpu"))
 MODEL.eval()
 
 print(f"Model loaded — {len(CLASSES)} ragas")
@@ -47,13 +51,11 @@ def list_ragas():
 
 @app.post("/predict")
 async def predict_raga(file: UploadFile = File(...)):
-    # Accept wav, mp3, m4a, webm
     allowed = {".wav", ".mp3", ".m4a", ".webm", ".ogg"}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed:
         raise HTTPException(400, f"Unsupported format: {ext}. Use {allowed}")
 
-    # Save to temp file
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
@@ -69,10 +71,7 @@ async def predict_raga(file: UploadFile = File(...)):
             top5 = torch.topk(probs, 5)
 
         predictions = [
-            {
-                "raga": CLASSES[i],
-                "confidence": round(p.item() * 100, 1)
-            }
+            {"raga": CLASSES[i], "confidence": round(p.item() * 100, 1)}
             for i, p in zip(top5.indices, top5.values)
         ]
 
