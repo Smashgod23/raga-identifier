@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
 import ragaData from './ragas.json'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = 'https://raga-identifier-production.up.railway.app'
 
 export default function App() {
   const [state, setState] = useState('idle')
@@ -22,7 +22,6 @@ export default function App() {
     const bufferLength = analyser.frequencyBinCount
     const dataArray = new Uint8Array(bufferLength)
     const bars = 80
-
     const draw = () => {
       animFrameRef.current = requestAnimationFrame(draw)
       analyser.getByteTimeDomainData(dataArray)
@@ -47,8 +46,6 @@ export default function App() {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-
-      // Set up Web Audio analyser
       const audioCtx = new AudioContext()
       const source = audioCtx.createMediaStreamSource(stream)
       const analyser = audioCtx.createAnalyser()
@@ -148,9 +145,7 @@ export default function App() {
           </div>
 
           <div style={styles.waveCard}>
-            <div style={styles.waveLabel}>
-              {state === 'recording' ? 'Live input' : 'Waveform'}
-            </div>
+            <div style={styles.waveLabel}>{state === 'recording' ? 'Live input' : 'Waveform'}</div>
             <div style={styles.waveBars}>
               {waveform.map((h, i) => (
                 <div key={i} style={{
