@@ -2,3 +2,10 @@ backend/venv/
 backend/data/RagaDataset/
 __pycache__/
 *.pyc
+backend/data/RagaDataset/
+backend/data/ragas/
+backend/data/*.wav
+backend/data/*.npy
+backend/venv/
+__pycache__/
+*.pyc
