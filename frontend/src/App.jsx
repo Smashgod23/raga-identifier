@@ -249,8 +249,8 @@ export default function App() {
               GitHub
             </a>
             <span style={styles.aboutLinkDot}>·</span>
-            <a href="mailto:prathamaithalb@gmail.com" style={styles.aboutLink}>
-              prathamaithalb@gmail.com
+            <a href="mailto:theprathamaithal@gmail.com" style={styles.aboutLink}>
+              theprathamaithal@gmail.com
             </a>
           </div>
         </div>
