@@ -1,0 +1,4 @@
+backend/venv/
+backend/data/RagaDataset/
+__pycache__/
+*.pyc
