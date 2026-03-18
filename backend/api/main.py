@@ -23,14 +23,16 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(os.path.join(BASE_DIR, "models"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
 
-model_path   = hf_hub_download(repo_id=REPO_ID, filename="raga_sklearn.pkl", local_dir=os.path.join(BASE_DIR, "models"))
-scaler_path  = hf_hub_download(repo_id=REPO_ID, filename="scaler.pkl",       local_dir=os.path.join(BASE_DIR, "models"))
-classes_path = hf_hub_download(repo_id=REPO_ID, filename="classes.json",     local_dir=os.path.join(BASE_DIR, "data"))
+model_path  = hf_hub_download(repo_id=REPO_ID, filename="raga_sklearn.pkl", local_dir=os.path.join(BASE_DIR, "models"))
+scaler_path = hf_hub_download(repo_id=REPO_ID, filename="scaler.pkl",       local_dir=os.path.join(BASE_DIR, "models"))
+classes_path= hf_hub_download(repo_id=REPO_ID, filename="classes.json",     local_dir=os.path.join(BASE_DIR, "data"))
 
 with open(classes_path) as f:
     CLASSES = json.load(f)
+
 with open(scaler_path, "rb") as f:
     SCALER = pickle.load(f)
+
 with open(model_path, "rb") as f:
     MODEL = pickle.load(f)
 
@@ -58,17 +60,21 @@ async def predict_raga(file: UploadFile = File(...)):
     try:
         features = extract_features_from_audio(tmp_path)
         features_scaled = SCALER.transform([features])
+
         probs = MODEL.predict_proba(features_scaled)[0]
         top5_idx = np.argsort(probs)[::-1][:5]
+
         predictions = [
             {"raga": CLASSES[i], "confidence": round(probs[i] * 100, 1)}
             for i in top5_idx
         ]
+
         return {
             "top_raga": predictions[0]["raga"],
             "confidence": predictions[0]["confidence"],
             "predictions": predictions
         }
+
     except ValueError as e:
         raise HTTPException(422, str(e))
     finally:

@@ -237,6 +237,24 @@ export default function App() {
       )}
 
       {error && <div style={styles.error}>{error}</div>}
+      {/* About */}
+      <div style={styles.about}>
+        <div style={styles.aboutDivider} />
+        <div style={styles.aboutContent}>
+          <div style={styles.aboutText}>
+            Built by <strong>Pratham Aithal</strong> - A high school student at Rock Hill High School in Frisco, TX (PISD), connecting a love of Carnatic vocal music with AI and machine learning.
+          </div>
+          <div style={styles.aboutLinks}>
+            <a href="https://github.com/Smashgod23/raga-identifier" target="_blank" style={styles.aboutLink}>
+              GitHub
+            </a>
+            <span style={styles.aboutLinkDot}>·</span>
+            <a href="mailto:prathamaithalb@gmail.com" style={styles.aboutLink}>
+              prathamaithalb@gmail.com
+            </a>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -336,4 +354,11 @@ const styles = {
     borderRadius: 10, padding: '12px 16px',
     fontSize: 13, color: '#b91c1c', marginTop: 12,
   },
+  about: { marginTop: 40 },
+  aboutDivider: { height: 1, background: '#e0dbd4', marginBottom: 24 },
+  aboutContent: { textAlign: 'center' },
+  aboutText: { fontSize: 13, color: '#9a9082', lineHeight: 1.7, marginBottom: 12, maxWidth: 480, margin: '0 auto 12px' },
+  aboutLinks: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  aboutLink: { fontSize: 13, color: '#c4826a', textDecoration: 'none' },
+  aboutLinkDot: { color: '#c8c0b4', fontSize: 13 },
 }
