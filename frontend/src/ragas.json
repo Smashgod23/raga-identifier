@@ -1,0 +1,192 @@
+{
+  "Kalyāṇi": {
+    "arohanam": "S R₂ G₃ M₂ P D₂ N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ D₂ P M₂ G₃ R₂ S",
+    "similar": ["Yaman", "Harikāmbhōji", "Śankarābharaṇaṁ"]
+  },
+  "Tōḍi": {
+    "arohanam": "S R₁ G₂ M₁ P D₁ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ P M₁ G₂ R₁ S",
+    "similar": ["Sāvēri", "Dhanyāsi", "Varāḷi"]
+  },
+  "Bhairavi": {
+    "arohanam": "S R₁ G₂ M₁ P D₁ N₂ Ṡ",
+    "avarohanam": "Ṡ N₃ D₂ P M₁ G₂ R₁ S",
+    "similar": ["Sindhubhairavi", "Ānandabhairavi", "Dhanyāsi"]
+  },
+  "Śankarābharaṇaṁ": {
+    "arohanam": "S R₂ G₃ M₁ P D₂ N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ D₂ P M₁ G₃ R₂ S",
+    "similar": ["Kalyāṇi", "Harikāmbhōji", "Bilahari"]
+  },
+  "Kāṁbhōji": {
+    "arohanam": "S R₂ G₃ M₁ P D₂ Ṡ",
+    "avarohanam": "Ṡ N₃ D₂ P M₁ G₃ R₂ S",
+    "similar": ["Harikāmbhōji", "Bilahari", "Śankarābharaṇaṁ"]
+  },
+  "Harikāmbhōji": {
+    "arohanam": "S R₂ G₃ M₁ P D₂ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₃ R₂ S",
+    "similar": ["Kāṁbhōji", "Śankarābharaṇaṁ", "Kalyāṇi"]
+  },
+  "Bilahari": {
+    "arohanam": "S R₂ G₃ P D₂ Ṡ",
+    "avarohanam": "Ṡ N₃ D₂ P M₁ G₃ R₂ S",
+    "similar": ["Kāṁbhōji", "Harikāmbhōji", "Śankarābharaṇaṁ"]
+  },
+  "Hamsadhvāni": {
+    "arohanam": "S R₂ G₃ P N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ P G₃ R₂ S",
+    "similar": ["Kalyāṇi", "Bilahari", "Mōhanaṁ"]
+  },
+  "Mōhanaṁ": {
+    "arohanam": "S R₂ G₃ P D₂ Ṡ",
+    "avarohanam": "Ṡ D₂ P G₃ R₂ S",
+    "similar": ["Bilahari", "Hamsadhvāni", "Śrīranjani"]
+  },
+  "Ānandabhairavi": {
+    "arohanam": "S G₂ R₂ G₂ M₁ P D₁ P Ṡ",
+    "avarohanam": "Ṡ D₁ P M₁ G₂ R₂ S",
+    "similar": ["Bhairavi", "Śrīranjani", "Dhanyāsi"]
+  },
+  "Sindhubhairavi": {
+    "arohanam": "S R₂ G₂ M₁ P D₁ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ P M₁ G₂ R₁ S",
+    "similar": ["Bhairavi", "Kāpi", "Dhanyāsi"]
+  },
+  "Dhanyāsi": {
+    "arohanam": "S G₂ M₁ P N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ P M₁ G₂ R₁ S",
+    "similar": ["Bhairavi", "Tōḍi", "Ānandabhairavi"]
+  },
+  "Śrīranjani": {
+    "arohanam": "S R₂ G₂ M₁ D₁ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ M₁ G₂ R₂ S",
+    "similar": ["Ānandabhairavi", "Dhanyāsi", "Kāpi"]
+  },
+  "Kāpi": {
+    "arohanam": "S R₂ G₂ M₁ P D₂ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₂ R₂ S",
+    "similar": ["Sindhubhairavi", "Śrīranjani", "Bhairavi"]
+  },
+  "Sāvēri": {
+    "arohanam": "S R₁ M₁ P D₁ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ P M₁ R₁ S",
+    "similar": ["Tōḍi", "Dhanyāsi", "Mukhāri"]
+  },
+  "Mukhāri": {
+    "arohanam": "S R₁ G₂ M₁ P D₁ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ P M₁ G₂ R₁ S",
+    "similar": ["Tōḍi", "Sāvēri", "Bhairavi"]
+  },
+  "Varāḷi": {
+    "arohanam": "S R₁ G₂ M₂ P D₁ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ P M₂ G₂ R₁ S",
+    "similar": ["Tōḍi", "Kāmavardani", "Śankarābharaṇaṁ"]
+  },
+  "Kāmavardani": {
+    "arohanam": "S R₁ G₃ M₂ P D₁ N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ D₁ P M₂ G₃ R₁ S",
+    "similar": ["Varāḷi", "Kalyāṇi", "Tōḍi"]
+  },
+  "Māyāmāḷavagauḷa": {
+    "arohanam": "S R₁ G₃ M₁ P D₁ N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ D₁ P M₁ G₃ R₁ S",
+    "similar": ["Gauḷa", "Kēdāragauḷa", "Rītigauḷa"]
+  },
+  "Gauḷa": {
+    "arohanam": "S R₁ M₁ P N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ P M₁ G₂ R₁ S",
+    "similar": ["Māyāmāḷavagauḷa", "Mukhāri", "Bhairavi"]
+  },
+  "Rītigauḷa": {
+    "arohanam": "S G₂ R₁ G₂ M₁ P N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ P M₁ G₂ R₁ S",
+    "similar": ["Gauḷa", "Mukhāri", "Māyāmāḷavagauḷa"]
+  },
+  "Kēdāragauḷa": {
+    "arohanam": "S R₂ M₁ P N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₃ R₂ S",
+    "similar": ["Gauḷa", "Harikāmbhōji", "Karaharapriya"]
+  },
+  "Karaharapriya": {
+    "arohanam": "S R₂ G₂ M₁ P D₂ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₂ R₂ S",
+    "similar": ["Kāpi", "Śrīranjani", "Kēdāragauḷa"]
+  },
+  "Nāṭa": {
+    "arohanam": "S R₂ G₃ M₁ P N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ P M₁ G₃ R₂ S",
+    "similar": ["Śankarābharaṇaṁ", "Kalyāṇi", "Bilahari"]
+  },
+  "Madhyamāvati": {
+    "arohanam": "S R₂ M₁ P N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ P M₁ R₂ S",
+    "similar": ["Sāvēri", "Mukhāri", "Gauḷa"]
+  },
+  "Sencuruṭṭi": {
+    "arohanam": "S R₁ G₃ M₁ P D₁ N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ D₁ P M₁ G₃ R₁ S",
+    "similar": ["Māyāmāḷavagauḷa", "Gauḷa", "Mukhāri"]
+  },
+  "Hussēnī": {
+    "arohanam": "S R₂ G₂ M₁ P D₁ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ P M₁ G₂ R₂ S",
+    "similar": ["Kāpi", "Sindhubhairavi", "Karaharapriya"]
+  },
+  "Yadukula kāṁbōji": {
+    "arohanam": "S R₂ G₃ M₁ P D₂ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₃ R₂ S",
+    "similar": ["Kāṁbhōji", "Harikāmbhōji", "Karaharapriya"]
+  },
+  "Dēvagāndhāri": {
+    "arohanam": "S R₂ M₁ P N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₃ R₂ S",
+    "similar": ["Madhyamāvati", "Harikāmbhōji", "Kēdāragauḷa"]
+  },
+  "Bēgaḍa": {
+    "arohanam": "S R₂ G₃ M₁ P D₂ N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ D₂ P M₁ G₃ R₂ S",
+    "similar": ["Harikāmbhōji", "Śankarābharaṇaṁ", "Kāṁbhōji"]
+  },
+  "Suraṭi": {
+    "arohanam": "S R₂ G₃ M₁ P D₂ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₃ R₂ S",
+    "similar": ["Harikāmbhōji", "Bēgaḍa", "Kāṁbhōji"]
+  },
+  "Sahānā": {
+    "arohanam": "S R₂ G₃ M₁ P M₁ D₂ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₂ R₂ S",
+    "similar": ["Karaharapriya", "Hussēnī", "Kāpi"]
+  },
+  "Nāṭakurinji": {
+    "arohanam": "S R₂ G₂ M₁ P D₂ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₂ R₂ S",
+    "similar": ["Karaharapriya", "Hussēnī", "Kāpi"]
+  },
+  "Pūrvīkaḷyāṇi": {
+    "arohanam": "S R₁ G₃ M₂ P D₁ N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ D₁ P M₂ G₃ R₁ S",
+    "similar": ["Kalyāṇi", "Kāmavardani", "Varāḷi"]
+  },
+  "Ṣanmukhapriya": {
+    "arohanam": "S R₂ G₂ M₂ P D₁ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₁ P M₂ G₂ R₂ S",
+    "similar": ["Varāḷi", "Karaharapriya", "Tōḍi"]
+  },
+  "Sāma": {
+    "arohanam": "S R₂ M₁ P N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ P M₁ G₃ R₂ S",
+    "similar": ["Hamsadhvāni", "Mōhanaṁ", "Bilahari"]
+  },
+  "Aṭāna": {
+    "arohanam": "S R₂ M₁ P N₃ Ṡ",
+    "avarohanam": "Ṡ N₃ D₂ N₃ P M₁ G₃ R₂ S",
+    "similar": ["Śankarābharaṇaṁ", "Nāṭa", "Bēgaḍa"]
+  },
+  "Kānaḍa": {
+    "arohanam": "S R₂ G₂ M₁ P D₂ N₂ Ṡ",
+    "avarohanam": "Ṡ N₂ D₂ P M₁ G₂ R₂ S",
+    "similar": ["Hussēnī", "Nāṭakurinji", "Karaharapriya"]
+  }
+}
