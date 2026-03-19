@@ -95,18 +95,71 @@ def extract_features(recording_dir):
         return None
     timestamps, pitches, tonic = result
 
-    # Feature 1: stable pitch class distribution
+    # Load flat/nyas segments
+    nyas_file = None
+    tani_file = None
+    for f in os.listdir(recording_dir):
+        if f.endswith(".flatSegNyas"):
+            nyas_file = os.path.join(recording_dir, f)
+        elif f.endswith(".taniSegKNN"):
+            tani_file = os.path.join(recording_dir, f)
+
+    # Load tani segments to exclude percussion section
+    tani_segments = []
+    if tani_file and os.path.getsize(tani_file) > 0:
+        try:
+            tani_data = np.loadtxt(tani_file)
+            if tani_data.ndim == 1:
+                tani_data = tani_data.reshape(1, -1)
+            tani_segments = tani_data
+        except:
+            pass
+
+    # Mask out tani sections from pitch
+    valid_mask = np.ones(len(timestamps), dtype=bool)
+    for seg in tani_segments:
+        valid_mask &= ~((timestamps >= seg[0]) & (timestamps <= seg[1]))
+
+    timestamps = timestamps[valid_mask]
+    pitches = pitches[valid_mask]
+
+    # Feature 1: nyas/flat segment pitch distribution
+    nyas_cents = []
+    if nyas_file and os.path.getsize(nyas_file) > 0:
+        try:
+            nyas_data = np.loadtxt(nyas_file)
+            if nyas_data.ndim == 1:
+                nyas_data = nyas_data.reshape(1, -1)
+
+            for seg in nyas_data:
+                start, end = seg[0], seg[1]
+                mask = (timestamps >= start) & (timestamps <= end) & (pitches > 0)
+                seg_pitches = pitches[mask]
+                if len(seg_pitches) > 0:
+                    cents = 1200 * np.log2(seg_pitches / tonic)
+                    nyas_cents.extend(cents)
+        except:
+            pass
+
+    nyas_cents = np.array(nyas_cents)
+    if len(nyas_cents) < 10:
+        # fallback to stable pitch filtering
+        nyas_cents = filter_stable_pitches(timestamps, pitches, tonic)
+
+    pcd_nyas = compute_pitch_class_distribution(nyas_cents)
+
+    # Feature 2: duration-weighted distribution
+    pcd_duration = compute_duration_weighted_distribution(timestamps, pitches, tonic)
+
+    # Feature 3: stable pitch distribution
     stable_cents = filter_stable_pitches(timestamps, pitches, tonic)
     pcd_stable = compute_pitch_class_distribution(stable_cents)
 
-    # Feature 2: duration-weighted distribution (all voiced frames)
-    pcd_duration = compute_duration_weighted_distribution(timestamps, pitches, tonic)
-
-    if pcd_stable is None or pcd_duration is None:
+    if pcd_nyas is None or pcd_duration is None or pcd_stable is None:
         return None
 
-    # Concatenate both — 240 features total
-    return np.concatenate([pcd_stable, pcd_duration])
+    # 360 features total
+    return np.concatenate([pcd_nyas, pcd_duration, pcd_stable])
 
 def build_dataset():
     mapping_path = os.path.join(DATASET_DIR, "_info_", "ragaId_to_ragaName_mapping.json")
