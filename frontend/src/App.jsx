@@ -2,6 +2,10 @@ import { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
 import ragaData from './ragas.json'
 
+const [feedback, setFeedback] = useState(null) // null | 'pending' | 'submitted'
+const [selectedRaga, setSelectedRaga] = useState('')
+const [searchQuery, setSearchQuery] = useState('')
+const [showDropdown, setShowDropdown] = useState(false)
 const API_URL = 'https://raga-identifier-production.up.railway.app'
 
 export default function App() {
@@ -74,6 +78,7 @@ export default function App() {
     setPredictions(null)
     setError(null)
     setRecordingTime(0)
+    setFeedback(null)
   }
 
   const topRaga = predictions?.top_raga
@@ -233,6 +238,79 @@ export default function App() {
           <button style={styles.resetBtn} onClick={reset}>
             Try another
           </button>
+          {/* Feedback */}
+{feedback !== 'submitted' && (
+  <div style={styles.feedbackCard}>
+    {feedback === null && (
+      <>
+        <div style={styles.feedbackQuestion}>Was this correct?</div>
+        <div style={styles.feedbackBtns}>
+          <button style={styles.feedbackYes} onClick={() => {
+            setFeedback('submitted')
+            axios.post(`${API_URL}/feedback`, {
+              predicted_raga: topRaga,
+              actual_raga: topRaga,
+              was_correct: true,
+              confidence: predictions.confidence,
+              audio_filename: ''
+            })
+          }}>Yes</button>
+          <button style={styles.feedbackNo} onClick={() => setFeedback('pending')}>No</button>
+          <button style={styles.feedbackSkip} onClick={() => setFeedback('submitted')}>Skip</button>
+        </div>
+      </>
+    )}
+
+    {feedback === 'pending' && (
+      <>
+        <div style={styles.feedbackQuestion}>What raga was it?</div>
+        <div style={styles.dropdownContainer}>
+          <input
+            style={styles.searchInput}
+            placeholder="Search ragas..."
+            value={searchQuery}
+            onChange={e => { setSearchQuery(e.target.value); setShowDropdown(true) }}
+            onFocus={() => setShowDropdown(true)}
+          />
+          {showDropdown && (
+            <div style={styles.dropdownList}>
+              {Object.keys(ragaData)
+                .filter(r => r.toLowerCase().includes(searchQuery.toLowerCase()))
+                .map(r => (
+                  <div key={r} style={styles.dropdownItem}
+                    onClick={() => { setSelectedRaga(r); setSearchQuery(r); setShowDropdown(false) }}>
+                    {r}
+                  </div>
+                ))
+              }
+              {Object.keys(ragaData).filter(r => r.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 && (
+                <div style={styles.dropdownEmpty}>
+                  Not found — we're working on adding more ragas!
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        {selectedRaga && (
+          <button style={styles.feedbackYes} onClick={() => {
+            setFeedback('submitted')
+            axios.post(`${API_URL}/feedback`, {
+              predicted_raga: topRaga,
+              actual_raga: selectedRaga,
+              was_correct: false,
+              confidence: predictions.confidence,
+              audio_filename: ''
+            })
+          }}>Submit</button>
+        )}
+      </>
+    )}
+  </div>
+)}
+
+{feedback === 'submitted' && (
+  <div style={styles.feedbackThanks}>Thanks for the feedback!</div>
+)}
         </>
       )}
 
@@ -361,4 +439,16 @@ const styles = {
   aboutLinks: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 },
   aboutLink: { fontSize: 13, color: '#c4826a', textDecoration: 'none' },
   aboutLinkDot: { color: '#c8c0b4', fontSize: 13 },
+  feedbackCard: { background: '#fff', border: '1px solid #e8e2da', borderRadius: 12, padding: '20px 24px', marginTop: 12 },
+  feedbackQuestion: { fontSize: 14, color: '#3c3530', marginBottom: 14, fontFamily: 'Georgia, serif' },
+ feedbackBtns: { display: 'flex', gap: 8 },
+ feedbackYes: { padding: '8px 20px', borderRadius: 8, background: '#eef6ee', border: '1px solid #c8dfc8', color: '#5a8a5a', fontSize: 13, cursor: 'pointer' },
+ feedbackNo: { padding: '8px 20px', borderRadius: 8, background: '#fdf8f6', border: '1px solid #e8d4c4', color: '#c4826a', fontSize: 13, cursor: 'pointer' },
+  feedbackSkip: { padding: '8px 20px', borderRadius: 8, background: '#f5f2ee', border: '1px solid #e0dbd4', color: '#9a9082', fontSize: 13, cursor: 'pointer' },
+  dropdownContainer: { position: 'relative', marginBottom: 12 },
+  searchInput: { width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #e8e2da', fontSize: 14, background: '#faf8f5', outline: 'none' },
+  dropdownList: { position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e8e2da', borderRadius: 8, maxHeight: 200, overflowY: 'auto', zIndex: 100, marginTop: 4 },
+  dropdownItem: { padding: '10px 14px', fontSize: 14, color: '#3c3530', cursor: 'pointer', fontFamily: 'Georgia, serif' },
+  dropdownEmpty: { padding: '10px 14px', fontSize: 13, color: '#9a9082', fontStyle: 'italic' },
+  feedbackThanks: { textAlign: 'center', fontSize: 13, color: '#5a8a5a', padding: '16px', background: '#eef6ee', borderRadius: 10, marginTop: 12 },
 }
