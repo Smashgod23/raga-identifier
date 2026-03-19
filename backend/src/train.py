@@ -54,7 +54,7 @@ class RagaNet(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-model = RagaNet(input_dim=120, num_classes=len(classes))
+model = RagaNet(input_dim=240, num_classes=len(classes))
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
 criterion = nn.CrossEntropyLoss()
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
