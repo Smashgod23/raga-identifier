@@ -3,7 +3,7 @@ uvicorn[standard]==0.30.1
 python-multipart==0.0.9
 librosa==0.10.2
 soundfile==0.12.1
-numpy==1.26.4
-scipy==1.13.0
+numpy==2.4.3
+scipy==1.17.1
 scikit-learn==1.5.2
 huggingface_hub==0.23.0
