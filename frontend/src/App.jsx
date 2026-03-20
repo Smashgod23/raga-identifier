@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import axios from 'axios'
 import ragaData from './ragas.json'
 
@@ -14,6 +14,7 @@ export default function App() {
   const [selectedRaga, setSelectedRaga] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [showDropdown, setShowDropdown] = useState(false)
+  const [audioId, setAudioId] = useState('')
 
   const mediaRecorderRef = useRef(null)
   const chunksRef = useRef([])
@@ -55,7 +56,6 @@ export default function App() {
       analyser.fftSize = 1024
       source.connect(analyser)
       startWaveformAnimation(analyser)
-
       const recorder = new MediaRecorder(stream)
       chunksRef.current = []
       recorder.ondataavailable = e => chunksRef.current.push(e.data)
@@ -96,6 +96,7 @@ export default function App() {
     try {
       const res = await axios.post(`${API_URL}/predict`, form)
       setPredictions(res.data)
+      setAudioId(res.data.audio_id || '')
       setState('result')
       setFeedback(null)
     } catch (e) {
@@ -112,6 +113,7 @@ export default function App() {
     setFeedback(null)
     setSelectedRaga('')
     setSearchQuery('')
+    setAudioId('')
     setWaveform(Array.from({ length: 80 }, () => 8 + Math.random() * 30))
   }
 
@@ -122,14 +124,13 @@ export default function App() {
       actual_raga: actualRaga,
       was_correct: wasCorrect,
       confidence: predictions.confidence,
-      audio_filename: ''
+      audio_filename: audioId
     }).catch(() => {})
   }
 
   const topRaga = predictions?.top_raga
   const ragaInfo = topRaga ? ragaData[topRaga] : null
-  const allRagas = Object.keys(ragaData)
-  const filteredRagas = allRagas.filter(r =>
+  const filteredRagas = Object.keys(ragaData).filter(r =>
     r.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
@@ -156,7 +157,6 @@ export default function App() {
               <div style={styles.inputLabel}>{state === 'recording' ? `Stop  ${recordingTime}s` : 'Record'}</div>
               <div style={styles.inputDesc}>{state === 'recording' ? 'Tap to stop and identify' : 'Sing or play into your mic'}</div>
             </div>
-
             <div style={{ ...styles.card, cursor: 'pointer' }} onClick={() => fileInputRef.current?.click()}>
               <div style={styles.uploadBox}>↑</div>
               <div style={styles.inputLabel}>Upload</div>
@@ -164,7 +164,6 @@ export default function App() {
               <input ref={fileInputRef} type="file" accept=".wav,.mp3,.m4a" style={{ display: 'none' }} onChange={handleFileUpload} />
             </div>
           </div>
-
           <div style={styles.waveCard}>
             <div style={styles.waveLabel}>{state === 'recording' ? 'Live input' : 'Waveform'}</div>
             <div style={styles.waveBars}>
@@ -241,7 +240,6 @@ export default function App() {
             </>
           )}
 
-          {/* Feedback */}
           {feedback === null && (
             <div style={styles.feedbackCard}>
               <div style={styles.feedbackQuestion}>Was this correct?</div>
