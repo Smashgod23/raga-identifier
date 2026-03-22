@@ -87,6 +87,68 @@ async def predict_raga(file: UploadFile = File(...)):
         raise HTTPException(422, str(e))
     finally:
         os.unlink(tmp_path)
+class YouTubeRequest(BaseModel):
+    url: str
+
+@app.post("/predict-youtube")
+async def predict_youtube(request: YouTubeRequest):
+    import subprocess
+    import glob as globmod
+
+    url = request.url
+    if not any(d in url for d in ['youtube.com', 'youtu.be']):
+        raise HTTPException(400, "Please provide a valid YouTube URL")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_template = os.path.join(tmpdir, "audio.%(ext)s")
+
+        try:
+            result = subprocess.run(
+                [
+                    "yt-dlp",
+                    "--no-playlist",
+                    "-x",
+                    "--audio-format", "wav",
+                    "-o", output_template,
+                    url
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+        except subprocess.TimeoutExpired:
+            raise HTTPException(422, "Download timed out — try a shorter video")
+
+        if result.returncode != 0:
+            raise HTTPException(422, "Could not download audio from this URL")
+
+        wav_files = globmod.glob(os.path.join(tmpdir, "audio.*"))
+        if not wav_files:
+            raise HTTPException(422, "Could not extract audio from this video")
+
+        audio_path = wav_files[0]
+
+        try:
+            features = extract_features_from_audio(audio_path)
+            features_scaled = SCALER.transform([features])
+
+            probs = MODEL.predict_proba(features_scaled)[0]
+            top5_idx = np.argsort(probs)[::-1][:5]
+
+            predictions = [
+                {"raga": CLASSES[i], "confidence": round(probs[i] * 100, 1)}
+                for i in top5_idx
+            ]
+
+            return {
+                "top_raga": predictions[0]["raga"],
+                "confidence": predictions[0]["confidence"],
+                "predictions": predictions
+            }
+
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
 class FeedbackRequest(BaseModel):
     predicted_raga: str
     actual_raga: str

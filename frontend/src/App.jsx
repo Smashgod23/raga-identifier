@@ -15,6 +15,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [showDropdown, setShowDropdown] = useState(false)
   const [audioId, setAudioId] = useState('')
+  const [youtubeUrl, setYoutubeUrl] = useState('')
 
   const mediaRecorderRef = useRef(null)
   const chunksRef = useRef([])
@@ -110,6 +111,22 @@ export default function App() {
     }
   }
 
+  const submitYoutubeUrl = async () => {
+    if (!youtubeUrl.trim()) return
+    setState('processing')
+    setError(null)
+    try {
+      const res = await axios.post(`${API_URL}/predict-youtube`, { url: youtubeUrl })
+      setPredictions(res.data)
+      setAudioId(res.data.audio_id || '')
+      setState('result')
+      setFeedback(null)
+    } catch (e) {
+      setError(e.response?.data?.detail || 'Could not process YouTube link.')
+      setState('idle')
+    }
+  }
+
   const reset = () => {
     setState('idle')
     setPredictions(null)
@@ -119,6 +136,7 @@ export default function App() {
     setSelectedRaga('')
     setSearchQuery('')
     setAudioId('')
+    setYoutubeUrl('')
     setWaveform(Array.from({ length: 80 }, () => 8 + Math.random() * 30))
   }
 
@@ -167,6 +185,31 @@ export default function App() {
               <div style={styles.inputLabel}>Upload</div>
               <div style={styles.inputDesc}>Drop a .wav or .mp3 file</div>
               <input ref={fileInputRef} type="file" accept=".wav,.mp3,.m4a" style={{ display: 'none' }} onChange={handleFileUpload} />
+            </div>
+          </div>
+          <div style={styles.youtubeCard}>
+            <div style={styles.youtubeHeader}>
+              <div style={styles.youtubeIcon}>▶</div>
+              <div>
+                <div style={styles.inputLabel}>YouTube Link</div>
+                <div style={styles.inputDesc}>Paste a link to identify the raga</div>
+              </div>
+            </div>
+            <div style={styles.youtubeInputRow}>
+              <input
+                style={styles.youtubeInput}
+                placeholder="https://youtube.com/watch?v=..."
+                value={youtubeUrl}
+                onChange={e => setYoutubeUrl(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && submitYoutubeUrl()}
+              />
+              <button
+                style={{ ...styles.youtubeBtn, opacity: youtubeUrl.trim() ? 1 : 0.5 }}
+                onClick={submitYoutubeUrl}
+                disabled={!youtubeUrl.trim()}
+              >
+                Identify
+              </button>
             </div>
           </div>
           <div style={styles.waveCard}>
@@ -333,6 +376,12 @@ const styles = {
   uploadBox: { width: 64, height: 64, borderRadius: 10, background: '#f5f2ee', border: '1.5px dashed #c8c0b4', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px', fontSize: 20, color: '#b0a898' },
   inputLabel: { fontSize: 15, fontWeight: 500, color: '#2c2c2c', marginBottom: 4 },
   inputDesc: { fontSize: 12, color: '#9a9082', lineHeight: 1.5 },
+  youtubeCard: { background: '#fff', border: '1px solid #e8e2da', borderRadius: 12, padding: '20px', marginBottom: 12 },
+  youtubeHeader: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 },
+  youtubeIcon: { width: 40, height: 40, borderRadius: 10, background: '#fdf0eb', border: '1.5px solid #e8d4c4', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, color: '#c4826a', flexShrink: 0 },
+  youtubeInputRow: { display: 'flex', gap: 8 },
+  youtubeInput: { flex: 1, padding: '10px 14px', borderRadius: 8, border: '1px solid #e8e2da', fontSize: 14, background: '#faf8f5', outline: 'none', fontFamily: "'DM Sans', sans-serif" },
+  youtubeBtn: { padding: '10px 20px', borderRadius: 8, background: '#c4826a', border: 'none', color: '#fff', fontSize: 13, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap' },
   waveCard: { background: '#fff', border: '1px solid #e8e2da', borderRadius: 12, padding: '16px 20px', marginBottom: 28 },
   waveLabel: { fontSize: 11, color: '#b0a898', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 },
   waveBars: { display: 'flex', alignItems: 'center', gap: 2, height: 60 },
