@@ -16,6 +16,8 @@ export default function App() {
   const [showDropdown, setShowDropdown] = useState(false)
   const [audioId, setAudioId] = useState('')
   const [youtubeUrl, setYoutubeUrl] = useState('')
+  const [processingMsg, setProcessingMsg] = useState('')
+  const processingTimerRef = useRef(null)
 
   const mediaRecorderRef = useRef(null)
   const chunksRef = useRef([])
@@ -82,16 +84,53 @@ export default function App() {
     }
   }
 
+  const startProcessing = (steps) => {
+    setProcessingMsg(steps[0])
+    let i = 1
+    clearInterval(processingTimerRef.current)
+    processingTimerRef.current = setInterval(() => {
+      if (i < steps.length) {
+        setProcessingMsg(steps[i])
+        i++
+      }
+    }, 3000)
+  }
+
+  const stopProcessing = () => {
+    clearInterval(processingTimerRef.current)
+    processingTimerRef.current = null
+  }
+
+  const audioSteps = [
+    'Analyzing audio...',
+    'Detecting pitch contour...',
+    'Estimating tonic (Sa)...',
+    'Extracting swara distribution...',
+    'Matching against 40 ragas...'
+  ]
+
+  const youtubeSteps = [
+    'Fetching audio from YouTube...',
+    'This may take a moment for longer videos...',
+    'Analyzing audio...',
+    'Detecting pitch contour...',
+    'Estimating tonic (Sa)...',
+    'Extracting swara distribution...',
+    'Matching against 40 ragas...'
+  ]
+
   const stopRecording = () => {
     clearInterval(timerRef.current)
     mediaRecorderRef.current?.stop()
     setState('processing')
+    startProcessing(audioSteps)
   }
 
   const handleFileUpload = e => {
     const file = e.target.files[0]
     if (!file) return
     setState('processing')
+    startProcessing(audioSteps)
     submitAudio(file, file.name)
   }
 
@@ -108,6 +147,8 @@ export default function App() {
     } catch (e) {
       setError(e.response?.data?.detail || 'Something went wrong.')
       setState('idle')
+    } finally {
+      stopProcessing()
     }
   }
 
@@ -115,6 +156,7 @@ export default function App() {
     if (!youtubeUrl.trim()) return
     setState('processing')
     setError(null)
+    startProcessing(youtubeSteps)
     try {
       const res = await axios.post(`${API_URL}/predict-youtube`, { url: youtubeUrl })
       setPredictions(res.data)
@@ -124,6 +166,8 @@ export default function App() {
     } catch (e) {
       setError(e.response?.data?.detail || 'Could not process YouTube link.')
       setState('idle')
+    } finally {
+      stopProcessing()
     }
   }
 
@@ -236,7 +280,7 @@ export default function App() {
               <div key={i} style={{ ...styles.processingDot, animationDelay: `${i * 0.2}s` }} />
             ))}
           </div>
-          <div style={styles.processingText}>Identifying raga...</div>
+          <div style={styles.processingText}>{processingMsg}</div>
         </div>
       )}
 
