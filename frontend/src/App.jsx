@@ -56,15 +56,20 @@ export default function App() {
       analyser.fftSize = 1024
       source.connect(analyser)
       startWaveformAnimation(analyser)
-      const recorder = new MediaRecorder(stream)
+      // Use the browser's actual recording format (webm on Chrome, ogg on Firefox, mp4 on Safari)
+      const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/mp4']
+      const mimeType = mimeTypes.find(t => MediaRecorder.isTypeSupported(t)) || ''
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
       chunksRef.current = []
       recorder.ondataavailable = e => chunksRef.current.push(e.data)
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/wav' })
+        const actualMime = recorder.mimeType
+        const ext = actualMime.includes('ogg') ? '.ogg' : actualMime.includes('mp4') ? '.m4a' : '.webm'
+        const blob = new Blob(chunksRef.current, { type: actualMime })
         stream.getTracks().forEach(t => t.stop())
         audioCtx.close()
         stopWaveformAnimation()
-        submitAudio(blob, 'recording.wav')
+        submitAudio(blob, `recording${ext}`)
       }
       recorder.start()
       mediaRecorderRef.current = recorder

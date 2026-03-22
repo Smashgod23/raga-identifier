@@ -6,16 +6,27 @@ def extract_features_from_audio(audio_path):
     import librosa
 
     y, sr = librosa.load(audio_path, sr=16000, mono=True, duration=60)
-    f0, voiced_flag, _ = librosa.pyin(
+
+    # Normalize audio level — helps with quiet mic recordings
+    peak = np.max(np.abs(y))
+    if peak > 0:
+        y = y / peak
+
+    f0, voiced_flag, voiced_probs = librosa.pyin(
         y, fmin=60, fmax=800, sr=sr,
         frame_length=1024, hop_length=256
     )
 
-    voiced = f0[voiced_flag]
+    # Use voiced probability for more reliable pitch estimates
+    confident_mask = voiced_flag & (voiced_probs > 0.3)
+    voiced = f0[confident_mask]
+    if len(voiced) < 30:
+        # Fall back to binary flag if probability threshold is too strict
+        voiced = f0[voiced_flag]
     if len(voiced) < 30:
         raise ValueError("Not enough pitched audio detected")
 
-    # Tonic detection
+    # Tonic detection with candidate evaluation
     hop = 256 / sr
     folded_pitches = voiced.copy()
     while np.any(folded_pitches > 120):
@@ -24,13 +35,34 @@ def extract_features_from_audio(audio_path):
         folded_pitches = np.where(folded_pitches < 60, folded_pitches * 2, folded_pitches)
 
     hist, bin_edges = np.histogram(folded_pitches, bins=200, range=(60, 120))
-    smoothed = uniform_filter1d(hist.astype(float), size=3)
-    tonic_idx = np.argmax(smoothed)
-    tonic_base = (bin_edges[tonic_idx] + bin_edges[tonic_idx + 1]) / 2
+    smoothed = uniform_filter1d(hist.astype(float), size=5)
     median_pitch = np.median(voiced)
-    tonic = tonic_base
-    while tonic * 2 < median_pitch:
-        tonic *= 2
+
+    # Evaluate top tonic candidates — pick the one that produces the most
+    # concentrated (peaked) pitch-class distribution, which indicates the
+    # correct Sa alignment
+    candidate_indices = np.argsort(smoothed)[::-1][:5]
+    best_tonic = None
+    best_score = -1
+    for idx in candidate_indices:
+        if smoothed[idx] == 0:
+            continue
+        cand = (bin_edges[idx] + bin_edges[idx + 1]) / 2
+        while cand * 2 < median_pitch:
+            cand *= 2
+        cents = 1200 * np.log2(voiced / cand)
+        h, _ = np.histogram(cents % 1200, bins=120, range=(0, 1200))
+        score = np.sum(h ** 2)  # L2 norm: higher = more peaked = better tonic
+        if score > best_score:
+            best_score = score
+            best_tonic = cand
+
+    if best_tonic is None:
+        tonic_idx = np.argmax(smoothed)
+        best_tonic = (bin_edges[tonic_idx] + bin_edges[tonic_idx + 1]) / 2
+        while best_tonic * 2 < median_pitch:
+            best_tonic *= 2
+    tonic = best_tonic
 
     all_cents = 1200 * np.log2(voiced / tonic)
 
