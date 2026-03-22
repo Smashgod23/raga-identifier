@@ -11,7 +11,7 @@ Contact: theprathamaithal@gmail.com
 
 ## What This Is
 
-Raga Identifier is a web application that listens to Carnatic music, either recorded live from a microphone or uploaded as an audio file, and identifies which raga is being performed. Think of it as Shazam for Carnatic ragas. The system currently recognizes 40 Carnatic ragas with 84.4% accuracy on the test set.
+Raga Identifier is a web application that listens to Carnatic music, either recorded live from a microphone, uploaded as an audio file, or provided via a YouTube link, and identifies which raga is being performed. Think of it as Shazam for Carnatic ragas. The system currently recognizes 40 Carnatic ragas with 84.4% accuracy on the test set.
 
 I built this project from scratch to connect two of my personal interests: Carnatic vocal music and machine learning. It is not a wrapper around a pre-existing API. I designed, trained, and deployed the model entirely from the ground up.
 
@@ -110,9 +110,9 @@ For deployment, the PyTorch model is converted to a scikit-learn MLPClassifier (
 **Inference (src/predict.py)**
 
 For a new audio file:
-1. Load audio at 16kHz using librosa
-2. Extract pitch contour using pyin (probabilistic YIN algorithm)
-3. Detect the tonic by folding all pitches into a single octave and finding the dominant frequency
+1. Load audio at 16kHz using librosa, normalize amplitude
+2. Extract pitch contour using pyin (probabilistic YIN algorithm), filter by voiced probability
+3. Detect the tonic by folding all pitches into a single octave, evaluating the top 5 frequency candidates, and selecting the one that produces the most concentrated (peaked) pitch-class distribution
 4. Apply the same three-channel feature extraction as training
 5. Scale features using the saved StandardScaler
 6. Run inference and return the top 5 predictions with confidence scores
@@ -127,6 +127,7 @@ Endpoints:
 - GET /health: returns status and number of ragas
 - GET /ragas: returns the full list of 40 ragas
 - POST /predict: accepts an audio file, runs inference, saves the audio to Supabase Storage, returns top 5 predictions and a unique audio ID
+- POST /predict-youtube: accepts a YouTube URL, downloads the audio using yt-dlp, runs the same inference pipeline, and returns top 5 predictions
 - POST /feedback: accepts user feedback (predicted raga, actual raga, correctness, confidence, audio filename) and stores it in the Supabase feedback table
 
 The backend uses Supabase for storage and the feedback database. Environment variables SUPABASE_URL and SUPABASE_KEY are set in Railway's environment configuration.
@@ -138,7 +139,8 @@ The frontend is a React application deployed on Vercel at raga-identifier.vercel
 Features:
 - Live microphone recording with real-time waveform visualization using the Web Audio API AnalyserNode
 - File upload for .wav, .mp3, and .m4a files
-- Processing state with animated loading indicator
+- YouTube link input: paste a YouTube URL and the backend extracts and analyzes the audio
+- Step-by-step processing status messages that keep the user informed during analysis (e.g. "Detecting pitch contour...", "Estimating tonic (Sa)..."), with extra context for YouTube downloads
 - Results display showing the top raga name, confidence percentage, arohanam, avarohanam, and a confidence bar chart for the top 5 predictions
 - Similar ragas panel based on shared swara sets
 - Human feedback loop: after each prediction, the user is asked whether the result was correct. If not, a searchable dropdown lets them select the actual raga. This feedback, along with the audio file ID, is sent to the backend and stored in Supabase for future retraining.
@@ -223,7 +225,7 @@ The biggest limiter right now is data. With only 12 training examples per raga, 
 
 **Improved tonic detection**
 
-The current tonic detection works well on clean recordings but struggles with short clips. I want to explore using a dedicated tonic detection model trained specifically for Carnatic music.
+Tonic detection now evaluates multiple candidates and picks the one producing the most concentrated pitch distribution, which significantly improved accuracy on live recordings. Further improvements could include a dedicated tonic detection model trained specifically for Carnatic music.
 
 **More ragas**
 
@@ -251,7 +253,7 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 
 | Layer | Technology |
 |---|---|
-| Audio processing | librosa, scipy |
+| Audio processing | librosa, scipy, yt-dlp |
 | Model training | PyTorch |
 | Model inference (deployed) | scikit-learn MLPClassifier |
 | Backend API | FastAPI, Python 3.11 |
