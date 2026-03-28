@@ -390,7 +390,7 @@ export default function App() {
         <div style={styles.aboutDivider} />
         <div style={styles.aboutContent}>
           <div style={styles.aboutText}>
-            Built by <strong>Pratham Aithal</strong> — a high school student at Rock Hill High School in Frisco, TX (PISD), connecting a love of Carnatic vocal music with AI and machine learning.
+            Built by <strong>Pratham Aithal</strong>, a high school student at Rock Hill High School in Frisco, TX (PISD), connecting a love of Carnatic vocal music with AI and machine learning.
           </div>
           <div style={styles.aboutLinks}>
             <a href="https://github.com/Smashgod23/raga-identifier" target="_blank" style={styles.aboutLink}>GitHub</a>

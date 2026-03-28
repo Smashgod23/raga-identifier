@@ -19,7 +19,7 @@ I built this project from scratch to connect two of my personal interests: Carna
 
 ## Background and Motivation
 
-Carnatic music is one of the two main subgenres of Indian classical music, originating in South India. At its core is the concept of the raga, a melodic framework defined not just by a scale (a set of ascending and descending notes called arohanam and avarohanam) but by characteristic phrases, ornaments (gamakam), and the emotional mood (rasa) it evokes. There are hundreds of ragas in the Carnatic tradition, each with a distinct identity.
+Carnatic music is one of the two main subgenres of Indian classical music, originating in South India. The central concept is the raga, a melodic framework defined not just by a scale (a set of ascending and descending notes called arohanam and avarohanam) but by characteristic phrases, ornaments (gamakam), and the emotional mood (rasa) it evokes. There are hundreds of ragas in the Carnatic tradition, each with a distinct identity.
 
 Identifying a raga by ear is a skill that takes trained musicians years to develop. I wanted to see whether a machine learning model could approximate this ability, and ultimately build something that helps learners, musicians, and enthusiasts identify ragas from recordings. As someone who studies Carnatic vocal music myself, this felt like a meaningful problem to work on.
 
@@ -37,7 +37,7 @@ This thesis was produced as part of the CompMusic project (ERC grant 267583), wh
 
 **1. Pitch Distribution as Raga Identity**
 
-The thesis establishes that the pitch class distribution, a histogram of how often each pitch relative to the tonic appears, is a powerful and shruti-independent feature for raga recognition. Because Carnatic music is performed in different shrutis (tonic frequencies) by different artists, normalizing pitches relative to the tonic and folding them into a single octave is essential.
+The thesis establishes that the pitch class distribution, a histogram of how often each pitch relative to the tonic appears, is an effective and shruti-independent feature for raga recognition. Because Carnatic music is performed in different shrutis (tonic frequencies) by different artists, normalizing pitches relative to the tonic and folding them into a single octave is essential.
 
 I implemented a 120-bin pitch class distribution where each bin represents 10 cents, covering one octave (0 to 1200 cents relative to the tonic). This is consistent with the Koduri thesis finding that finer bin resolutions around 10 cents outperform coarser bins for Carnatic music classification.
 
@@ -45,7 +45,7 @@ I implemented a 120-bin pitch class distribution where each bin represents 10 ce
 
 A critical insight from the thesis is that naively including all voiced pitch frames, including ornaments and gamakas, introduces noise that actually hurts classification accuracy. The thesis proposes filtering to only stable pitch regions using two thresholds: a maximum allowed pitch slope (Tslope, measured in cents per second) and a minimum duration for a stable region (Ttime, measured in seconds). This removes passing notes and ornaments, keeping only the pitches where a performer is truly resting on a swara.
 
-I implemented this with Tslope = 1500 cents/sec and Ttime = 0.1 seconds, consistent with the optimal values reported in the thesis. This was one of the key changes that improved my model accuracy from 80.2% to 84.4%.
+I implemented this with Tslope = 1500 cents/sec and Ttime = 0.1 seconds, consistent with the optimal values reported in the thesis. This change improved my model accuracy from 80.2% to 84.4%.
 
 **3. Duration-Weighted Distribution**
 
@@ -53,7 +53,7 @@ The thesis also proposes weighting pitch contributions by how long they are held
 
 **4. Nyas Segments**
 
-The dataset included .flatSegNyas files which mark timestamps of flat or sustained notes, the moments when performers rest on characteristic swaras. These are the most musically significant moments for raga identification because the vadi (dominant swara) and samvadi (sub-dominant swara) are most clearly expressed during sustained notes. By extracting pitch distributions specifically from these segments, I was able to give the model cleaner and more informative training examples.
+The dataset included .flatSegNyas files which mark timestamps of flat or sustained notes, the moments when performers rest on characteristic swaras. These matter most for raga identification because the vadi (dominant swara) and samvadi (sub-dominant swara) are most clearly expressed during sustained notes. By extracting pitch distributions specifically from these segments, I was able to give the model cleaner and more informative training examples.
 
 **5. Tani Avartanam Exclusion**
 
@@ -224,7 +224,7 @@ I added 209 YouTube-sourced samples to bring the per-raga count from 12 to rough
 
 **Improved tonic detection**
 
-Tonic detection now evaluates multiple candidates and picks the one producing the most concentrated pitch distribution, which significantly improved accuracy on live recordings. Further improvements could include a dedicated tonic detection model trained specifically for Carnatic music.
+Tonic detection now evaluates multiple candidates and picks the one producing the most concentrated pitch distribution, which improved accuracy on live recordings. Further improvements could include a dedicated tonic detection model trained specifically for Carnatic music.
 
 **More ragas**
 
