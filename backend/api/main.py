@@ -100,43 +100,77 @@ async def predict_youtube(request: YouTubeRequest):
         raise HTTPException(400, "Please provide a valid YouTube URL")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        output_template = os.path.join(tmpdir, "audio.%(ext)s")
-
+        # Get video duration to decide sampling strategy
         try:
-            result = subprocess.run(
-                [
-                    "yt-dlp",
-                    "--no-playlist",
-                    "-x",
-                    "--audio-format", "wav",
-                    "-o", output_template,
-                    url
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120
+            dur_result = subprocess.run(
+                ["yt-dlp", "--no-playlist", "--print", "duration", url],
+                capture_output=True, text=True, timeout=30
             )
-        except subprocess.TimeoutExpired:
-            raise HTTPException(422, "Download timed out — try a shorter video")
+            duration = int(dur_result.stdout.strip()) if dur_result.returncode == 0 else 0
+        except (subprocess.TimeoutExpired, ValueError):
+            duration = 0
 
-        if result.returncode != 0:
-            raise HTTPException(422, "Could not download audio from this URL")
+        # Build list of segments to download and analyze.
+        # Short clips (<3 min): download the whole thing.
+        # Longer videos: sample 3 segments from different parts, skipping
+        # the intro (often tuning/applause) and averaging predictions.
+        segment_len = 90
+        if duration > 180:
+            quarter = duration // 4
+            segments = [
+                (quarter, quarter + segment_len),
+                (2 * quarter, 2 * quarter + segment_len),
+                (3 * quarter, 3 * quarter + segment_len),
+            ]
+        else:
+            segments = [None]  # None = download full audio
 
-        wav_files = globmod.glob(os.path.join(tmpdir, "audio.*"))
-        if not wav_files:
+        all_probs = []
+        for seg in segments:
+            seg_dir = os.path.join(tmpdir, f"seg_{seg[0] if seg else 'full'}")
+            os.makedirs(seg_dir, exist_ok=True)
+            output_template = os.path.join(seg_dir, "audio.%(ext)s")
+
+            dl_args = [
+                "yt-dlp", "--no-playlist",
+                "-x", "--audio-format", "wav",
+                "-o", output_template,
+            ]
+            if seg is not None:
+                dl_args += ["--download-sections", f"*{seg[0]}-{seg[1]}"]
+            dl_args.append(url)
+
+            try:
+                result = subprocess.run(
+                    dl_args, capture_output=True, text=True, timeout=120
+                )
+            except subprocess.TimeoutExpired:
+                continue
+            if result.returncode != 0:
+                continue
+
+            wav_files = globmod.glob(os.path.join(seg_dir, "audio.*"))
+            if not wav_files:
+                continue
+
+            try:
+                features = extract_features_from_audio(wav_files[0])
+                features_scaled = SCALER.transform([features])
+                probs = MODEL.predict_proba(features_scaled)[0]
+                all_probs.append(probs)
+            except (ValueError, Exception):
+                continue
+
+        if not all_probs:
             raise HTTPException(422, "Could not extract audio from this video")
 
-        audio_path = wav_files[0]
+        # Average probabilities across all successful segments
+        avg_probs = np.mean(all_probs, axis=0)
+        top5_idx = np.argsort(avg_probs)[::-1][:5]
 
         try:
-            features = extract_features_from_audio(audio_path)
-            features_scaled = SCALER.transform([features])
-
-            probs = MODEL.predict_proba(features_scaled)[0]
-            top5_idx = np.argsort(probs)[::-1][:5]
-
             predictions = [
-                {"raga": CLASSES[i], "confidence": round(probs[i] * 100, 1)}
+                {"raga": CLASSES[i], "confidence": round(avg_probs[i] * 100, 1)}
                 for i in top5_idx
             ]
 
