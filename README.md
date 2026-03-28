@@ -11,7 +11,7 @@ Contact: theprathamaithal@gmail.com
 
 ## What This Is
 
-Raga Identifier is a web application that listens to Carnatic music, either recorded live from a microphone, uploaded as an audio file, or provided via a YouTube link, and identifies which raga is being performed. Think of it as Shazam for Carnatic ragas. The system currently recognizes 40 Carnatic ragas with 84.4% accuracy on the test set.
+Raga Identifier is a web application that listens to Carnatic music, either recorded live from a microphone, uploaded as an audio file, or provided via a YouTube link, and identifies which raga is being performed. Think of it as Shazam for Carnatic ragas. The system currently recognizes 40 Carnatic ragas, trained on 689 samples from the CompMusic research dataset and YouTube recordings.
 
 I built this project from scratch to connect two of my personal interests: Carnatic vocal music and machine learning. It is not a wrapper around a pre-existing API. I designed, trained, and deployed the model entirely from the ground up.
 
@@ -63,7 +63,7 @@ The dataset also included .taniSegKNN files marking where the percussion solo (t
 
 ## Dataset
 
-The training data came from the Indian Art Music Raga Recognition Dataset (features), available at https://zenodo.org/records/7278505. This dataset was produced by the CompMusic research group and contains pre-extracted pitch features for 480 Carnatic music recordings across 40 ragas, with 12 recordings per raga. The features include:
+The core training data came from the Indian Art Music Raga Recognition Dataset (features), available at https://zenodo.org/records/7278505. This dataset was produced by the CompMusic research group and contains pre-extracted pitch features for 480 Carnatic music recordings across 40 ragas, with 12 recordings per raga. An additional 209 samples were sourced from YouTube recordings of all 40 ragas (using yt-dlp search and the inference pipeline for feature extraction), bringing the total to 689 training samples. The CompMusic features include:
 
 - .pitch: raw pitch contour with timestamps
 - .pitchSilIntrpPP: pitch with silences interpolated
@@ -127,7 +127,7 @@ Endpoints:
 - GET /health: returns status and number of ragas
 - GET /ragas: returns the full list of 40 ragas
 - POST /predict: accepts an audio file, runs inference, saves the audio to Supabase Storage, returns top 5 predictions and a unique audio ID
-- POST /predict-youtube: accepts a YouTube URL, downloads the audio using yt-dlp, runs the same inference pipeline, and returns top 5 predictions
+- POST /predict-youtube: accepts a YouTube URL, downloads audio using yt-dlp. For videos longer than 3 minutes, it samples 3 segments from different parts of the video (at 25%, 50%, and 75% through) and averages the predictions, which avoids tuning sections and intros that would throw off the model. Returns top 5 predictions.
 - POST /feedback: accepts user feedback (predicted raga, actual raga, correctness, confidence, audio filename) and stores it in the Supabase feedback table
 
 The backend uses Supabase for storage and the feedback database. Environment variables SUPABASE_URL and SUPABASE_KEY are set in Railway's environment configuration.
@@ -172,7 +172,7 @@ yt-dlp initially failed because it needed a JavaScript runtime to solve YouTube'
 
 **Data augmentation failure**
 
-I attempted to augment the training data by adding Gaussian noise to feature vectors. This reduced accuracy from 78% to 3%. The reason is that pitch class distributions are normalized histograms and adding noise to them destroys their mathematical properties. The correct approach is to augment raw audio before feature extraction, which requires the original audio files. Feature-level augmentation does not work for this type of data.
+I attempted to augment the training data by adding Gaussian noise to feature vectors. This reduced accuracy from 78% to 3%. The reason is that pitch class distributions are normalized histograms and adding noise to them destroys their mathematical properties. I later tried more conservative approaches (small circular shifts to simulate tonic errors, tiny noise with scale jitter) but these also hurt accuracy - even a 3-bin shift (30 cents) distorts the subtle pitch patterns that distinguish similar ragas. With only 12 samples per class, the model doesn't have enough signal to learn through the augmentation noise. The real fix turned out to be more data, not augmentation.
 
 **PyTorch deployment size**
 
@@ -192,13 +192,12 @@ The feedback state variables were accidentally placed outside the App component 
 
 | Metric | Value |
 |---|---|
-| Test set accuracy | 84.4% |
 | Number of ragas | 40 |
-| Training samples | 480 |
+| Training samples | 689 (480 CompMusic + 209 YouTube) |
 | Feature dimensions | 360 |
 | Baseline (random guessing) | 2.5% |
 
-The model performs best on ragas with very distinctive swara sets. On real recordings, Todi came in at 97.9% confidence, Kalyani at 80.3%, and Shankarabharanam at 56.5%. The hardest cases are pentatonic ragas that share many swaras, like Mohanam and Bilahari, where the difference lies in specific ornamental patterns rather than the swara set alone.
+The model performs best on ragas with very distinctive swara sets. On real recordings, Todi came in at 97.9% confidence, Kalyani at 97.3%, and Shankarabharanam at 97.6% (from the middle of an MS Subbulakshmi recording). The hardest cases are pentatonic ragas that share many swaras, like Mohanam and Bilahari, where the difference lies in specific ornamental patterns rather than the swara set alone.
 
 ---
 
@@ -221,7 +220,7 @@ The original 84.4% model is backed up on Hugging Face as raga_sklearn_v1_84pct.p
 
 **More training data**
 
-The biggest limiter right now is data. With only 12 training examples per raga, the model has seen a very small slice of how each raga can be performed. I plan to collect YouTube recordings for each raga (particularly alapanas, which are the purest form of raga exposition) and use audio augmentation on the raw audio files to multiply the dataset size.
+I added 209 YouTube-sourced samples to bring the per-raga count from 12 to roughly 17. The next step is to continue expanding this - the download_youtube_data.py script automates the process. The existing video index (data/youtube_videos.json) tracks which videos have already been processed to avoid duplicates. Target is 30+ samples per raga.
 
 **Improved tonic detection**
 
@@ -274,13 +273,16 @@ raga-identifier/
 │   ├── api/
 │   │   └── main.py               FastAPI app
 │   ├── src/
-│   │   ├── preprocess.py         Feature extraction from dataset
-│   │   ├── train.py              Model training
-│   │   └── predict.py            Inference for live audio
+│   │   ├── preprocess.py              Feature extraction from dataset
+│   │   ├── train.py                   Model training (PyTorch + sklearn)
+│   │   ├── predict.py                 Inference for live audio
+│   │   └── download_youtube_data.py   YouTube data collection
 │   ├── data/
-│   │   ├── X.npy                 Training features
-│   │   ├── y.npy                 Training labels
-│   │   └── classes.json          Raga names
+│   │   ├── X.npy                 CompMusic training features
+│   │   ├── X_yt.npy              YouTube training features
+│   │   ├── y.npy / y_yt.npy     Training labels
+│   │   ├── classes.json          Raga names
+│   │   └── youtube_videos.json   Video index for deduplication
 │   ├── models/
 │   │   ├── raga_model_best.pt    PyTorch model
 │   │   ├── raga_sklearn.pkl      Deployed sklearn model
@@ -327,23 +329,17 @@ The frontend runs at http://localhost:5173 and expects the backend at http://loc
 ```bash
 cd backend
 source venv/bin/activate
-python src/preprocess.py   # extract features from dataset
-python src/train.py        # train PyTorch model
 
-# convert to sklearn for deployment
-python -c "
-import numpy as np, pickle
-from sklearn.neural_network import MLPClassifier
-X = np.load('data/X.npy')
-y = np.load('data/y.npy')
-with open('models/scaler.pkl', 'rb') as f: scaler = pickle.load(f)
-clf = MLPClassifier(hidden_layer_sizes=(256,128,64), max_iter=500, random_state=42)
-clf.fit(scaler.transform(X), y)
-pickle.dump(clf, open('models/raga_sklearn.pkl','wb'))
-print('Done:', clf.score(scaler.transform(X), y))
-"
+# (Optional) Collect more YouTube training data
+python src/download_youtube_data.py
 
-# upload to Hugging Face
+# Extract features from CompMusic dataset (if re-processing)
+python src/preprocess.py
+
+# Train - produces both PyTorch model and sklearn model for deployment
+python src/train.py
+
+# Upload to Hugging Face
 python -c "
 from huggingface_hub import HfApi
 api = HfApi()
@@ -352,7 +348,7 @@ api.upload_file(path_or_fileobj='models/scaler.pkl', path_in_repo='scaler.pkl', 
 "
 ```
 
-Then redeploy Railway by pushing to GitHub.
+Then push to GitHub to trigger Railway redeploy.
 
 ---
 
