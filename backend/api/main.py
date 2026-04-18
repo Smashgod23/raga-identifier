@@ -67,11 +67,12 @@ def _predict_multi_segment(audio_path, tonic_override=None):
         total_dur = 0.0
 
     if total_dur <= LONG_CLIP_THRESHOLD or total_dur <= 0:
-        features, tonic = extract_features_from_audio(
+        features, detected_tonic = extract_features_from_audio(
             audio_path, tonic_override=tonic_override, duration=total_dur if total_dur > 0 else None
         )
         probs = MODEL.predict_proba(SCALER.transform([features]))[0]
-        return probs, tonic
+        # Report the user-supplied Sa as-is so the UI doesn't show an octave-shifted note.
+        return probs, (float(tonic_override) if tonic_override else detected_tonic)
 
     # Long clip: anchor Sa once so per-segment features share the same cents reference.
     if tonic_override is not None and float(tonic_override) > 0:
@@ -104,13 +105,17 @@ def _predict_multi_segment(audio_path, tonic_override=None):
             continue
 
     if not all_probs:
-        # Fallback: one pass on the middle window
-        feats, _ = extract_features_from_audio(
-            audio_path, tonic_override=anchor_tonic,
-            offset=max(0.0, (total_dur - LONG_CLIP_THRESHOLD) / 2),
-            duration=LONG_CLIP_THRESHOLD,
-        )
-        all_probs = [MODEL.predict_proba(SCALER.transform([feats]))[0]]
+        # Fallback: one pass on the middle window. If even this fails, surface a 422
+        # rather than a 500 — typical cause is a corrupt or fully-silent file.
+        try:
+            feats, _ = extract_features_from_audio(
+                audio_path, tonic_override=anchor_tonic,
+                offset=max(0.0, (total_dur - LONG_CLIP_THRESHOLD) / 2),
+                duration=LONG_CLIP_THRESHOLD,
+            )
+            all_probs = [MODEL.predict_proba(SCALER.transform([feats]))[0]]
+        except Exception:
+            raise ValueError("Could not extract features from audio")
 
     return np.mean(all_probs, axis=0), anchor_tonic
 
