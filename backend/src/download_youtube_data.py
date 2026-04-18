@@ -52,7 +52,7 @@ def download_and_extract(video_id, duration):
             return None
 
         try:
-            features = extract_features_from_audio(wav_files[0])
+            features, _ = extract_features_from_audio(wav_files[0])
             return features
         except (ValueError, Exception) as e:
             return None

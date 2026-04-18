@@ -4,6 +4,18 @@ import ragaData from './ragas.json'
 
 const API_URL = 'https://raga-identifier-production.up.railway.app'
 
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+const SA_OPTIONS = (() => {
+  const opts = [{ label: 'Auto-detect', value: '' }]
+  // Chromatic from C2 to B4 covers the realistic Sa range for male and female vocalists.
+  for (let m = 36; m <= 71; m++) {
+    const hz = 440 * Math.pow(2, (m - 69) / 12)
+    const name = NOTE_NAMES[m % 12] + (Math.floor(m / 12) - 1)
+    opts.push({ label: `${name}  ·  ${hz.toFixed(1)} Hz`, value: hz.toFixed(2) })
+  }
+  return opts
+})()
+
 export default function App() {
   const [state, setState] = useState('idle')
   const [predictions, setPredictions] = useState(null)
@@ -16,6 +28,7 @@ export default function App() {
   const [showDropdown, setShowDropdown] = useState(false)
   const [audioId, setAudioId] = useState('')
   const [youtubeUrl, setYoutubeUrl] = useState('')
+  const [tonicHz, setTonicHz] = useState('')
   const [processingMsg, setProcessingMsg] = useState('')
   const processingTimerRef = useRef(null)
 
@@ -138,6 +151,7 @@ export default function App() {
     setError(null)
     const form = new FormData()
     form.append('file', blob, filename)
+    if (tonicHz) form.append('tonic_hz', tonicHz)
     try {
       const res = await axios.post(`${API_URL}/predict`, form)
       setPredictions(res.data)
@@ -158,7 +172,9 @@ export default function App() {
     setError(null)
     startProcessing(youtubeSteps)
     try {
-      const res = await axios.post(`${API_URL}/predict-youtube`, { url: youtubeUrl })
+      const ytBody = { url: youtubeUrl }
+      if (tonicHz) ytBody.tonic_hz = parseFloat(tonicHz)
+      const res = await axios.post(`${API_URL}/predict-youtube`, ytBody)
       setPredictions(res.data)
       setAudioId(res.data.audio_id || '')
       setState('result')
@@ -213,6 +229,22 @@ export default function App() {
 
       {(state === 'idle' || state === 'recording') && (
         <>
+          <div style={styles.tonicPicker}>
+            <div>
+              <div style={styles.tonicLabel}>My Sa <span style={styles.tonicHint}>optional</span></div>
+              <div style={styles.tonicDesc}>Set this for solo voice — auto-detect works best with a tambura drone</div>
+            </div>
+            <select
+              style={styles.tonicSelect}
+              value={tonicHz}
+              onChange={e => setTonicHz(e.target.value)}
+              disabled={state === 'recording'}
+            >
+              {SA_OPTIONS.map(opt => (
+                <option key={opt.label} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
           <div style={styles.inputGrid}>
             <div
               style={{ ...styles.card, ...(state === 'recording' ? styles.cardActive : {}), cursor: 'pointer' }}
@@ -290,7 +322,14 @@ export default function App() {
           <div style={styles.card}>
             <div style={styles.eyebrow}>Identified raga</div>
             <div style={styles.ragaName}>{topRaga}</div>
-            <div style={styles.confidenceTag}>{predictions.confidence}% confident</div>
+            <div style={styles.tagRow}>
+              <div style={styles.confidenceTag}>{predictions.confidence}% confident</div>
+              {predictions.tonic_note && (
+                <div style={predictions.tonic_overridden ? styles.saTagSet : styles.saTag}>
+                  {predictions.tonic_overridden ? 'Your Sa' : 'Detected Sa'}: {predictions.tonic_note}
+                </div>
+              )}
+            </div>
             {ragaInfo && (
               <div style={styles.detailsGrid}>
                 <div style={styles.detailPill}>
@@ -436,7 +475,15 @@ const styles = {
   divider: { height: 1, background: '#e0dbd4', margin: '0 0 20px' },
   eyebrow: { fontSize: 11, letterSpacing: 1.5, textTransform: 'uppercase', color: '#b0a898', marginBottom: 8 },
   ragaName: { fontFamily: 'Georgia, serif', fontSize: 42, fontWeight: 500, color: '#1e1e1e', letterSpacing: -0.5, lineHeight: 1.1, marginBottom: 8 },
-  confidenceTag: { display: 'inline-block', background: '#eef6ee', color: '#5a8a5a', fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 20, marginBottom: 20 },
+  confidenceTag: { display: 'inline-block', background: '#eef6ee', color: '#5a8a5a', fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 20 },
+  tagRow: { display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 },
+  saTag: { display: 'inline-block', background: '#f5f2ee', color: '#9a9082', fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 20 },
+  saTagSet: { display: 'inline-block', background: '#fdf0eb', color: '#c4826a', fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 20 },
+  tonicPicker: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, background: '#fff', border: '1px solid #e8e2da', borderRadius: 12, padding: '14px 18px', marginBottom: 12 },
+  tonicLabel: { fontSize: 14, fontWeight: 500, color: '#3c3530', marginBottom: 2 },
+  tonicHint: { fontSize: 11, color: '#b0a898', fontWeight: 400, marginLeft: 6 },
+  tonicDesc: { fontSize: 11, color: '#9a9082', lineHeight: 1.4 },
+  tonicSelect: { padding: '8px 12px', borderRadius: 8, border: '1px solid #e8e2da', fontSize: 13, background: '#faf8f5', color: '#3c3530', outline: 'none', fontFamily: "'DM Sans', sans-serif", cursor: 'pointer', minWidth: 150 },
   detailsGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 },
   detailPill: { background: '#faf8f5', border: '1px solid #ede8e0', borderRadius: 8, padding: '10px 14px' },
   detailKey: { fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', color: '#b0a898', marginBottom: 3 },
