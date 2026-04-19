@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+notebooks/
+data/RagaDataset/
+data/ragas/
+data/*.wav
+data/*.npy
+models/
+.git/
+.DS_Store
