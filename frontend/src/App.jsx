@@ -2,7 +2,7 @@ import { useState, useRef } from 'react'
 import axios from 'axios'
 import ragaData from './ragas.json'
 
-const API_URL = 'https://raga-identifier-production.up.railway.app'
+const API_URL = 'https://smashgod23-raga-identifier-api.hf.space'
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 const SA_OPTIONS = (() => {
