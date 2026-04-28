@@ -21,7 +21,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, THIS_DIR)
 
 from preprocess_audio_clips import (
-    AUDIO_DIR, FEAT_DIR, MAPPING_PATH, tonicfine_path
+    AUDIO_DIR, MAPPING_PATH, tonicfine_path
 )
 from predict import extract_features_from_audio
 
@@ -62,7 +62,8 @@ def main():
                     pairs_by_raga.setdefault(raga_id, []).append((raga_name, apath, tpath))
 
     rng = random.Random(42)
-    chosen_ragas = rng.sample(sorted(pairs_by_raga.keys()), 5)
+    available = sorted(pairs_by_raga.keys())
+    chosen_ragas = rng.sample(available, min(5, len(available)))
 
     overall_pass = True
     for raga_id in chosen_ragas:
