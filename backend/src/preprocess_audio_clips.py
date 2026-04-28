@@ -19,7 +19,6 @@ Run from backend/:
 import json
 import multiprocessing as mp
 import os
-import sys
 import time
 from collections import Counter
 
@@ -62,7 +61,9 @@ def _process_recording(args):
     from predict import extract_features_from_audio
 
     rel_path = os.path.relpath(audio_path, AUDIO_DIR)
-    recording_id = os.path.splitext(os.path.basename(audio_path))[0]
+    # Use relative path (not just basename) as the unique recording ID.
+    # Many recordings share the same song title across artists/ragas.
+    recording_id = os.path.splitext(rel_path)[0]
 
     try:
         total_dur = librosa.get_duration(path=audio_path)
