@@ -3,8 +3,10 @@ Slice raw Carnatic audio recordings into overlapping 30-second clips and extract
 360-dimensional pitch-class features for each clip.
 
 Feature extraction uses extract_features_from_audio from predict.py exactly —
-same pyin pipeline, same tonic detection, same 3-channel 360-d feature space
-as inference. No changes to that function.
+same pyin pipeline, same 3-channel 360-d feature space as inference. The tonic
+is supplied per-recording from CompMusic's expert-annotated .tonicFine files
+(via tonic_override) instead of auto-detection, so all clips from a recording
+share the singer's true Sa.
 
 Outputs:
   backend/data/X_audio_clips.npy       — (N, 360) float64 feature matrix
@@ -25,6 +27,10 @@ from collections import Counter
 import numpy as np
 
 AUDIO_DIR = os.path.expanduser("~/raga-data-audio/RagaDataset/Carnatic/audio")
+FEAT_DIR  = os.path.join(
+    os.path.dirname(__file__), "..", "data",
+    "RagaDataset", "Carnatic", "features"
+)
 MAPPING_PATH = os.path.join(
     os.path.dirname(__file__), "..", "data",
     "RagaDataset", "Carnatic", "_info_", "ragaId_to_ragaName_mapping.json"
@@ -36,6 +42,13 @@ PREDICT_DIR  = os.path.dirname(os.path.abspath(__file__))
 CLIP_DURATION     = 30.0  # seconds per clip
 CLIP_HOP          = 10.0  # seconds between clip start times
 MIN_CLIP_DURATION = 20.0  # minimum clip length to attempt feature extraction
+
+
+def tonicfine_path(audio_path):
+    """Map an audio .mp3 path to its parallel .tonicFine path under FEAT_DIR.
+    Audio and features share the same relative tree; only base dir + extension differ."""
+    rel_no_ext = os.path.splitext(os.path.relpath(audio_path, AUDIO_DIR))[0]
+    return os.path.join(FEAT_DIR, rel_no_ext + ".tonicFine")
 
 
 def _build_clip_offsets(total_dur):
@@ -52,7 +65,7 @@ def _build_clip_offsets(total_dur):
 
 def _process_recording(args):
     """Worker function — runs in a spawned subprocess so all imports are local."""
-    audio_path, raga_id, raga_name, label = args
+    audio_path, raga_id, raga_name, label, expert_tonic = args
 
     # Local imports so spawned workers start cleanly without inheriting parent state.
     import librosa
@@ -67,7 +80,7 @@ def _process_recording(args):
 
     try:
         total_dur = librosa.get_duration(path=audio_path)
-    except Exception as e:
+    except Exception:
         return [], 0, 1  # (results, n_skipped, n_errors)
 
     clip_specs = _build_clip_offsets(total_dur)
@@ -80,7 +93,12 @@ def _process_recording(args):
 
     for offset, dur in clip_specs:
         try:
-            features, _ = extract_features_from_audio(audio_path, offset=offset, duration=dur)
+            features, _ = extract_features_from_audio(
+                audio_path,
+                tonic_override=expert_tonic,
+                offset=offset,
+                duration=dur,
+            )
             results.append((
                 features,
                 label,
@@ -92,6 +110,7 @@ def _process_recording(args):
                     "clip_start":   round(offset, 2),
                     "clip_dur":     round(dur, 2),
                     "audio_path":   rel_path,
+                    "expert_tonic_hz": expert_tonic,
                 }
             ))
         except ValueError:
@@ -110,8 +129,11 @@ def main():
         classes = json.load(f)
     name_to_label = {n: i for i, n in enumerate(classes)}
 
-    # Build full work list: one item per recording file
+    # Build full work list: one item per recording file, with expert tonic attached.
+    # If any audio file is missing its .tonicFine, abort — we expect 480/480 and a
+    # miss means the features dataset is incomplete or the path rule is wrong.
     work_items = []
+    missing = []
     for raga_id in sorted(os.listdir(AUDIO_DIR)):
         if raga_id not in id_to_name:
             continue
@@ -123,11 +145,30 @@ def main():
         raga_dir = os.path.join(AUDIO_DIR, raga_id)
         for root, _, files in os.walk(raga_dir):
             for fname in sorted(files):
-                if fname.lower().endswith(".mp3"):
-                    work_items.append((
-                        os.path.join(root, fname),
-                        raga_id, raga_name, label,
-                    ))
+                if not fname.lower().endswith(".mp3"):
+                    continue
+                apath = os.path.join(root, fname)
+                tpath = tonicfine_path(apath)
+                if not os.path.exists(tpath):
+                    missing.append(os.path.relpath(apath, AUDIO_DIR))
+                    continue
+                with open(tpath) as f:
+                    expert_tonic = float(f.read().strip())
+                work_items.append((apath, raga_id, raga_name, label, expert_tonic))
+
+    if missing:
+        print(
+            f"ABORT: {len(missing)} audio files have no matching .tonicFine. "
+            f"First 5: {missing[:5]}",
+            flush=True,
+        )
+        raise SystemExit(2)
+
+    print(
+        f"[{time.strftime('%H:%M:%S')}] Loaded {len(work_items)}/480 expert tonics. "
+        f"All recordings matched.",
+        flush=True,
+    )
 
     nproc = max(1, min(mp.cpu_count() - 1, 8))
     print(
