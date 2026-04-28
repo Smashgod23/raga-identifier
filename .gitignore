@@ -1,13 +1,11 @@
 backend/venv/
 backend/data/RagaDataset/
-__pycache__/
-*.pyc
-backend/data/RagaDataset/
 backend/data/ragas/
 backend/data/*.wav
 backend/data/*.npy
-backend/venv/
+backend/.env
 __pycache__/
 *.pyc
-backend/.env
 .playwright-mcp/
+# Raw audio dataset — lives outside repo at ~/raga-data-audio/ so never committed
+raga-data-audio/
