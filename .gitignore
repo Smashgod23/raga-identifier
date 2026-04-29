@@ -3,6 +3,7 @@ backend/data/RagaDataset/
 backend/data/ragas/
 backend/data/*.wav
 backend/data/*.npy
+backend/data/audio_clips_meta.json
 backend/.env
 __pycache__/
 *.pyc
