@@ -3,7 +3,6 @@
 A Carnatic music raga recognition system built by Pratham Aithal, a high school student at Rock Hill High School in Frisco, TX (PISD).
 
 Live site: https://raga-identifier.vercel.app
-Backend API: https://raga-identifier-production.up.railway.app
 GitHub: https://github.com/Smashgod23/raga-identifier
 Contact: theprathamaithal@gmail.com
 
@@ -94,6 +93,10 @@ For each recording in the dataset, I:
 6. Compute three 120-bin pitch class distributions: nyas-based, duration-weighted, and stable-filtered
 7. Concatenate them into a single 360-dimensional feature vector
 
+**Audio Clip Pipeline (src/preprocess_audio_clips.py)**
+
+A second preprocessing pipeline that slices the full raw audio recordings (MP3 files from the CompMusic audio dataset) into 30-second clips with a 10-second hop and extracts features from each clip directly via the pyin pitch estimator. This is the same inference path used at runtime in predict.py. The tonic for each clip is taken from the corresponding expert-annotated .tonicFine file, not auto-detected, because auto-detection fails too often on short windows. The pipeline produced 44,071 clips across 480 recordings, which will be used to expand training data from 689 samples to roughly 44,760. A multiprocessing pool with 7 workers is used because pyin (not disk I/O) is the bottleneck.
+
 **Model (src/train.py)**
 
 I trained a feedforward neural network using PyTorch with the following architecture:
@@ -117,9 +120,9 @@ For a new audio file:
 5. Scale features using the saved StandardScaler
 6. Run inference and return the top 5 predictions with confidence scores
 
-### Backend API (FastAPI, Railway)
+### Backend API (FastAPI, Hugging Face Spaces)
 
-The backend is a FastAPI application deployed on Railway at raga-identifier-production.up.railway.app.
+The backend is a FastAPI application deployed on Hugging Face Spaces at smashgod23-raga-identifier-api.hf.space.
 
 On startup it downloads the model, scaler, and class list from Hugging Face Hub (Smashgod23/raga-identifier) to avoid storing large files in the git repository.
 
@@ -130,7 +133,7 @@ Endpoints:
 - POST /predict-youtube: accepts a YouTube URL, downloads audio using yt-dlp. For videos longer than 3 minutes, it samples 3 segments from different parts of the video (at 25%, 50%, and 75% through) and averages the predictions, which avoids tuning sections and intros that would throw off the model. Returns top 5 predictions.
 - POST /feedback: accepts user feedback (predicted raga, actual raga, correctness, confidence, audio filename) and stores it in the Supabase feedback table
 
-The backend uses Supabase for storage and the feedback database. Environment variables SUPABASE_URL and SUPABASE_KEY are set in Railway's environment configuration.
+The backend uses Supabase for storage and the feedback database. Environment variables SUPABASE_URL and SUPABASE_KEY are set in the Hugging Face Spaces secrets configuration.
 
 ### Frontend (React + Vite, Vercel)
 
@@ -149,7 +152,7 @@ Features:
 ### Infrastructure
 
 - Model storage: Hugging Face Hub (free tier)
-- Backend hosting: Railway (free tier, 1GB RAM)
+- Backend hosting: Hugging Face Spaces (free tier)
 - Frontend hosting: Vercel (free tier)
 - Database and file storage: Supabase (free tier)
 - Version control: GitHub
@@ -166,6 +169,10 @@ The first major obstacle was getting Python 3.11.9 installed correctly on macOS 
 
 Getting the tonic of a new recording right is the single hardest part of the inference pipeline. An incorrect tonic shifts every pitch by the wrong amount and the model fails completely. My first attempt used the median voiced pitch, which was often wrong. My second attempt used frequency histogram peak detection but got confused by high-frequency harmonics. The final approach folds all pitches into a single octave to collapse the tonic signature regardless of which octave the performer sings in, then finds the dominant pitch in that octave and scales it back to match the median pitch of the performance.
 
+**Auto-tonic failure on short clips**
+
+When I built the audio clip preprocessing pipeline, I initially planned to auto-detect the tonic for each 30-second clip the same way inference does it at runtime. I ran a diagnostic on five random recordings before starting the overnight pipeline run, and found that 3 out of 5 were completely wrong - one had an octave error where the algorithm detected 91.95 Hz instead of 183.51 Hz (the median voiced pitch sat right on the boundary of the octave-folding loop), one locked onto Pa instead of Sa because the tanpura drone sustains both notes equally and the early part of the recording had more melodic activity on the fifth, and one locked onto Ri during the alapana intro where the performer was ornamenting that swara heavily. The per-clip failure rate on 30-second windows would have been around 60%, producing garbage features after a multi-hour processing run. I killed the pipeline before it wrote any output and refactored it to pre-load the expert-annotated .tonicFine values (one per recording) and pass them through as a tonic override. All 480 recordings have matching .tonicFine files, and the pipeline now hard-aborts at startup if any are missing.
+
 **YouTube download issues**
 
 yt-dlp initially failed because it needed a JavaScript runtime to solve YouTube's challenge system. Installing Deno and updating yt-dlp resolved this. Many video URLs were also unavailable, requiring multiple retries with different videos.
@@ -174,13 +181,17 @@ yt-dlp initially failed because it needed a JavaScript runtime to solve YouTube'
 
 I attempted to augment the training data by adding Gaussian noise to feature vectors. This reduced accuracy from 78% to 3%. The reason is that pitch class distributions are normalized histograms and adding noise to them destroys their mathematical properties. I later tried more conservative approaches (small circular shifts to simulate tonic errors, tiny noise with scale jitter) but these also hurt accuracy - even a 3-bin shift (30 cents) distorts the subtle pitch patterns that distinguish similar ragas. With only 12 samples per class, the model doesn't have enough signal to learn through the augmentation noise. The real fix turned out to be more data, not augmentation.
 
+**Recording ID collisions**
+
+During development of the audio clip pipeline, I initially used the filename (basename only) as the recording ID for each clip, which is used to keep clips from the same recording in the same train/test split. I found that 42 recordings share the same song title across different artists, for example Sri_Madhava.mp3 appears under two different Behag artists. This would have incorrectly grouped clips from separate recordings together and possibly leaked correlated data across the split boundary. I fixed this by using the full relative path from the audio root directory as the recording ID instead of just the filename.
+
 **PyTorch deployment size**
 
 Railway's free tier has a 4GB Docker image limit and PyTorch alone is over 2GB. I solved this by converting the trained PyTorch model to a scikit-learn MLPClassifier, which has equivalent inference behavior but requires only scikit-learn as a dependency, keeping the Docker image under 1GB.
 
 **sklearn and numpy version mismatches**
 
-After converting to sklearn, the Railway deployment crashed because the local sklearn version (1.5.2) did not match Railway's default (1.5.0). Pickle files are not forward or backward compatible across sklearn or numpy versions. I fixed this by pinning both sklearn and numpy to the exact versions used during training in requirements-deploy.txt.
+After converting to sklearn, the deployment crashed because the local sklearn version (1.5.2) did not match the server's default (1.5.0). Pickle files are not forward or backward compatible across sklearn or numpy versions. I fixed this by pinning both sklearn and numpy to the exact versions used during training in requirements-deploy.txt.
 
 **React hooks error**
 
@@ -218,9 +229,9 @@ The original 84.4% model is backed up on Hugging Face as raga_sklearn_v1_84pct.p
 
 ## Next Steps
 
-**More training data**
+**Expanded training data from full audio recordings**
 
-I added 209 YouTube-sourced samples to bring the per-raga count from 12 to roughly 17. The next step is to continue expanding this - the download_youtube_data.py script automates the process. The existing video index (data/youtube_videos.json) tracks which videos have already been processed to avoid duplicates. Target is 30+ samples per raga.
+The audio clip pipeline (src/preprocess_audio_clips.py) has already run and produced 44,071 clips from the 480 CompMusic concert recordings. The next step is to combine these with the existing 689-sample dataset and retrain using a recording-aware train/test split, where all clips from the same recording stay on the same side of the split. This is required because clips with a 10-second hop from the same concert are heavily correlated, and a naive random split would leak them across train and test, inflating accuracy numbers. The retrained model is expected to improve substantially on hard cases like similar pentatonic ragas.
 
 **Improved tonic detection**
 
@@ -256,7 +267,7 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 | Model training | PyTorch |
 | Model inference (deployed) | scikit-learn MLPClassifier |
 | Backend API | FastAPI, Python 3.11 |
-| Backend hosting | Railway |
+| Backend hosting | Hugging Face Spaces |
 | Model storage | Hugging Face Hub |
 | Database and file storage | Supabase |
 | Frontend | React, Vite |
@@ -271,29 +282,32 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 raga-identifier/
 ├── backend/
 │   ├── api/
-│   │   └── main.py               FastAPI app
+│   │   └── main.py                        FastAPI app
 │   ├── src/
-│   │   ├── preprocess.py              Feature extraction from dataset
-│   │   ├── train.py                   Model training (PyTorch + sklearn)
-│   │   ├── predict.py                 Inference for live audio
-│   │   └── download_youtube_data.py   YouTube data collection
+│   │   ├── preprocess.py                  Feature extraction from CompMusic pitch files
+│   │   ├── preprocess_audio_clips.py      Clip slicing pipeline for raw audio
+│   │   ├── train.py                       Model training (PyTorch + sklearn)
+│   │   ├── predict.py                     Inference for live audio
+│   │   ├── download_youtube_data.py       YouTube data collection
+│   │   ├── verify_tonic_detection.py      Diagnostic: auto-tonic vs expert on 5 recordings
+│   │   └── verify_clip_features.py        Pre-flight check for clip feature quality
 │   ├── data/
-│   │   ├── X.npy                 CompMusic training features
-│   │   ├── X_yt.npy              YouTube training features
-│   │   ├── y.npy / y_yt.npy     Training labels
-│   │   ├── classes.json          Raga names
-│   │   └── youtube_videos.json   Video index for deduplication
+│   │   ├── X.npy                          CompMusic training features (480 samples)
+│   │   ├── X_yt.npy                       YouTube training features (209 samples)
+│   │   ├── y.npy / y_yt.npy              Training labels
+│   │   ├── classes.json                   Raga names
+│   │   └── youtube_videos.json            Video index for deduplication
 │   ├── models/
-│   │   ├── raga_model_best.pt    PyTorch model
-│   │   ├── raga_sklearn.pkl      Deployed sklearn model
-│   │   └── scaler.pkl            Feature scaler
-│   ├── requirements.txt          Full local dependencies
-│   ├── requirements-deploy.txt   Slim deployment dependencies
+│   │   ├── raga_model_best.pt             PyTorch model
+│   │   ├── raga_sklearn.pkl               Deployed sklearn model
+│   │   └── scaler.pkl                     Feature scaler
+│   ├── requirements.txt                   Full local dependencies
+│   ├── requirements-deploy.txt            Slim deployment dependencies
 │   └── Dockerfile
 └── frontend/
     ├── src/
-    │   ├── App.jsx               Main React component
-    │   └── ragas.json            Raga knowledge base
+    │   ├── App.jsx                        Main React component
+    │   └── ragas.json                     Raga knowledge base
     ├── index.html
     └── package.json
 ```
@@ -320,7 +334,7 @@ npm install
 npm run dev
 ```
 
-The frontend runs at http://localhost:5173 and expects the backend at http://localhost:8000. To point the frontend at the local backend instead of Railway, change API_URL in src/App.jsx.
+The frontend runs at http://localhost:5173 and expects the backend at http://localhost:8000. To point the frontend at the local backend instead of the deployed API, change API_URL in src/App.jsx.
 
 ---
 
@@ -333,8 +347,12 @@ source venv/bin/activate
 # (Optional) Collect more YouTube training data
 python src/download_youtube_data.py
 
-# Extract features from CompMusic dataset (if re-processing)
+# Extract features from CompMusic pitch files
 python src/preprocess.py
+
+# (Optional) Slice raw audio recordings into 30s clips and extract features
+# Requires the CompMusic audio dataset at ~/raga-data-audio/
+python src/preprocess_audio_clips.py
 
 # Train - produces both PyTorch model and sklearn model for deployment
 python src/train.py
@@ -348,7 +366,7 @@ api.upload_file(path_or_fileobj='models/scaler.pkl', path_in_repo='scaler.pkl', 
 "
 ```
 
-Then push to GitHub to trigger Railway redeploy.
+Then push to GitHub to trigger a Hugging Face Spaces redeploy.
 
 ---
 
