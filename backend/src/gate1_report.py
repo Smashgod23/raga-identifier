@@ -86,23 +86,33 @@ def fmt_peaks(peaks):
     return ", ".join(f"bin{i:3d} ({i*10:>4d}¢)={v:.4f}" for i, v in peaks)
 
 
-def build_xnpy_recording_index(classes):
+def build_xnpy_recording_index(classes, y_old):
     """Walk features dir in the same order preprocess.py used and produce
     X.npy row → (recording_id, raga_name) mapping. The recording_id format
     matches audio_clips_meta.json: '{raga_id}/{artist}/{album}/{song}/{song}'.
     Audio paths nest one extra dir for the song filename, so we append the
-    pitchSilIntrpPP basename (without ext) to the features relpath."""
+    pitchSilIntrpPP basename (without ext) to the features relpath.
+
+    Validates the walk produced the same label ordering as y.npy. If
+    os.walk/os.listdir returned a different order on this filesystem,
+    the recording_id at row i would point to a different recording than
+    X.npy row i was actually built from; we abort instead of silently
+    producing a misleading report."""
     with open(MAPPING_PATH, encoding="utf-8") as f:
         id_to_name = json.load(f)
 
+    name_to_label = {n: i for i, n in enumerate(classes)}
+
     raga_ids = sorted(os.listdir(FEATURES_DIR))
-    out = []  # row index → (recording_id, raga_name)
+    out = []           # row index → (recording_id, raga_name)
+    walk_labels = []   # row index → label (must match y_old)
     for raga_id in raga_ids:
         if raga_id not in id_to_name:
             continue
         raga_name = id_to_name[raga_id]
-        if raga_name not in set(classes):
+        if raga_name not in name_to_label:
             continue
+        label = name_to_label[raga_name]
         raga_dir = os.path.join(FEATURES_DIR, raga_id)
         for root, _dirs, files in os.walk(raga_dir):
             pitch_files = [f for f in files if f.endswith(".pitchSilIntrpPP")]
@@ -112,12 +122,39 @@ def build_xnpy_recording_index(classes):
             rel  = os.path.relpath(root, FEATURES_DIR)
             recording_id = f"{rel}/{base}"
             out.append((recording_id, raga_name))
+            walk_labels.append(label)
+
+    if len(out) != len(y_old):
+        raise SystemExit(
+            f"ABORT: features-dir walk produced {len(out)} recordings but "
+            f"y.npy has {len(y_old)} rows. Cannot align X.npy to recording_ids."
+        )
+    walk_arr = np.asarray(walk_labels)
+    if not np.array_equal(walk_arr, y_old):
+        n_diff = int((walk_arr != y_old).sum())
+        first_bad = int(np.argmax(walk_arr != y_old))
+        raise SystemExit(
+            f"ABORT: features-dir walk order does not match y.npy "
+            f"({n_diff} mismatches, first at row {first_bad}: walk={walk_arr[first_bad]} "
+            f"y_old={int(y_old[first_bad])}). The X.npy row → recording_id "
+            f"mapping cannot be trusted on this filesystem; re-run preprocess.py "
+            f"to regenerate X.npy in the current walk order."
+        )
     return out
 
 
 def find_match_in_clips(recording_id, meta):
     """Return list of clip indices in X_audio_clips for this recording_id."""
     return [i for i, m in enumerate(meta) if m["recording_id"] == recording_id]
+
+
+def _tonicfine_path_for_audio(audio_path):
+    """Map an audio .mp3 path to its parallel .tonicFine path under FEATURES_DIR.
+    Mirrors preprocess_audio_clips.tonicfine_path so we sample the same set
+    of recordings as verify_tonic_detection.py (which only includes MP3s
+    with a matching .tonicFine annotation)."""
+    rel_no_ext = os.path.splitext(os.path.relpath(audio_path, AUDIO_DIR))[0]
+    return os.path.join(FEATURES_DIR, rel_no_ext + ".tonicFine")
 
 
 # ── sections ───────────────────────────────────────────────────────────────
@@ -156,6 +193,10 @@ def section2_tonic_verification(tee, meta):
     with open(MAPPING_PATH, encoding="utf-8") as f:
         id_to_name = json.load(f)
 
+    # Match verify_tonic_detection.py exactly: only include MP3s that have
+    # a corresponding .tonicFine annotation. Skipping this filter would let
+    # extra/unannotated audio files into the seeded RNG pool and pick
+    # recordings that aren't in audio_clips_meta.json.
     pairs_by_raga = {}
     for raga_id in sorted(os.listdir(AUDIO_DIR)):
         raga_name = id_to_name.get(raga_id)
@@ -166,6 +207,8 @@ def section2_tonic_verification(tee, meta):
                 if not fname.lower().endswith(".mp3"):
                     continue
                 apath = os.path.join(root, fname)
+                if not os.path.exists(_tonicfine_path_for_audio(apath)):
+                    continue
                 pairs_by_raga.setdefault(raga_id, []).append((raga_name, apath))
 
     rng = random.Random(42)
@@ -198,7 +241,7 @@ def section2_tonic_verification(tee, meta):
     print(file=tee)
 
 
-def per_channel_compare(tee, label, x_old_row, clip_rows):
+def per_channel_compare(tee, x_old_row, clip_rows):
     """Per-channel top-5 peaks and cosine similarity between X.npy row and 3 clip rows."""
     chan_names = [("nyas",     0,   120),
                   ("duration", 120, 240),
@@ -251,7 +294,7 @@ def section3_kalyani(tee, X_old, X_clips, meta, x_index):
 
     print(f"Sampled clip start times: {sample_starts}", file=tee)
     print(file=tee)
-    per_channel_compare(tee, raga_name, X_old[row_idx], sample_rows)
+    per_channel_compare(tee, X_old[row_idx], sample_rows)
     return row_idx, recid, raga_name, sample_picks, sample_rows
 
 
@@ -342,7 +385,7 @@ def section5_todi(tee, X_old, X_clips, meta, x_index):
     sample_starts = [meta[i]["clip_start"] for i in sample_picks]
     print(f"Sampled clip start times: {sample_starts}", file=tee)
     print(file=tee)
-    per_channel_compare(tee, raga_name, X_old[row_idx], sample_rows)
+    per_channel_compare(tee, X_old[row_idx], sample_rows)
 
 
 # ── main ───────────────────────────────────────────────────────────────────
@@ -376,10 +419,9 @@ def main():
     section1_dataset_summary(tee, X_clips, y_clips, classes)
     section2_tonic_verification(tee, meta)
 
-    x_index = build_xnpy_recording_index(classes)
-    if len(x_index) != len(X_old):
-        print(f"WARNING: x_index ({len(x_index)}) != X.npy rows ({len(X_old)}) — "
-              f"walk order may have drifted", file=tee)
+    # Aborts internally if the walk order doesn't match y.npy — that would
+    # mean the X.npy → recording_id mapping is wrong on this filesystem.
+    x_index = build_xnpy_recording_index(classes, y_old)
 
     kal = section3_kalyani(tee, X_old, X_clips, meta, x_index)
     if kal is not None:
