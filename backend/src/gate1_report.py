@@ -416,11 +416,15 @@ def main():
     # trustworthy and we skip the per-recording comparison sections rather
     # than silently compare unrelated recordings.
     x_index = build_xnpy_recording_index(classes, y_old)
+    cross_check_ran = False
     if x_index is None:
-        section(tee, "SECTIONS 3 & 5 — SKIPPED")
+        section(tee, "SECTIONS 3 & 5 — SKIPPED (gate FAILED)")
         print("Could not align X.npy rows to recording_ids on this filesystem.",
               file=tee)
         print("(features-dir walk did not match y.npy label sequence.)", file=tee)
+        print("Sections 1, 2, and 4 still ran and are written below, but the", file=tee)
+        print("critical Kalyāṇi/Tōḍi cross-comparison did not execute. Treat", file=tee)
+        print("this run as a failed gate; do not proceed to training.", file=tee)
         print(file=tee)
         section4_sanity(tee, X_old, X_clips)
     else:
@@ -434,10 +438,17 @@ def main():
 
         section4_sanity(tee, X_old, X_clips)
         section5_todi(tee, X_old, X_clips, meta, x_index)
+        cross_check_ran = True
 
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
         f.write(tee.buf.getvalue())
     print(f"\nReport written to: {REPORT_PATH}")
+
+    # Exit non-zero so any automation (CI, Make targets, etc.) treats a
+    # skipped cross-comparison as a failed gate. The report is still on
+    # disk and Sections 1/2/4 are still readable.
+    if not cross_check_ran:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
