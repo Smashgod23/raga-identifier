@@ -93,11 +93,15 @@ def build_xnpy_recording_index(classes, y_old):
     Audio paths nest one extra dir for the song filename, so we append the
     pitchSilIntrpPP basename (without ext) to the features relpath.
 
-    Validates the walk produced the same label ordering as y.npy. If
-    os.walk/os.listdir returned a different order on this filesystem,
-    the recording_id at row i would point to a different recording than
-    X.npy row i was actually built from; we abort instead of silently
-    producing a misleading report."""
+    Returns the mapping only if the walk reproduces the exact label sequence
+    in y.npy. Returns None otherwise — the caller should skip the cross-
+    comparison sections rather than risk pointing at the wrong row.
+
+    The walk can have more entries than y.npy: preprocess.build_dataset()
+    skips any recording where extract_features() returns None (missing
+    .tonicFine, too little voiced pitch, missing channel). In that case
+    we can't recover which specific recording was dropped within a raga,
+    so we don't try to guess."""
     with open(MAPPING_PATH, encoding="utf-8") as f:
         id_to_name = json.load(f)
 
@@ -105,7 +109,7 @@ def build_xnpy_recording_index(classes, y_old):
 
     raga_ids = sorted(os.listdir(FEATURES_DIR))
     out = []           # row index → (recording_id, raga_name)
-    walk_labels = []   # row index → label (must match y_old)
+    walk_labels = []
     for raga_id in raga_ids:
         if raga_id not in id_to_name:
             continue
@@ -124,23 +128,10 @@ def build_xnpy_recording_index(classes, y_old):
             out.append((recording_id, raga_name))
             walk_labels.append(label)
 
-    if len(out) != len(y_old):
-        raise SystemExit(
-            f"ABORT: features-dir walk produced {len(out)} recordings but "
-            f"y.npy has {len(y_old)} rows. Cannot align X.npy to recording_ids."
-        )
-    walk_arr = np.asarray(walk_labels)
-    if not np.array_equal(walk_arr, y_old):
-        n_diff = int((walk_arr != y_old).sum())
-        first_bad = int(np.argmax(walk_arr != y_old))
-        raise SystemExit(
-            f"ABORT: features-dir walk order does not match y.npy "
-            f"({n_diff} mismatches, first at row {first_bad}: walk={walk_arr[first_bad]} "
-            f"y_old={int(y_old[first_bad])}). The X.npy row → recording_id "
-            f"mapping cannot be trusted on this filesystem; re-run preprocess.py "
-            f"to regenerate X.npy in the current walk order."
-        )
-    return out
+    if (len(out) == len(y_old)
+            and np.array_equal(np.asarray(walk_labels), y_old)):
+        return out
+    return None
 
 
 def find_match_in_clips(recording_id, meta):
@@ -419,20 +410,30 @@ def main():
     section1_dataset_summary(tee, X_clips, y_clips, classes)
     section2_tonic_verification(tee, meta)
 
-    # Aborts internally if the walk order doesn't match y.npy — that would
-    # mean the X.npy → recording_id mapping is wrong on this filesystem.
+    # Returns None if the features-dir walk doesn't exactly reproduce the
+    # label sequence in y.npy (e.g. preprocess skipped a recording on this
+    # filesystem). In that case the X.npy row → recording_id mapping isn't
+    # trustworthy and we skip the per-recording comparison sections rather
+    # than silently compare unrelated recordings.
     x_index = build_xnpy_recording_index(classes, y_old)
-
-    kal = section3_kalyani(tee, X_old, X_clips, meta, x_index)
-    if kal is not None:
-        row_idx, recid, _raga_name, sample_picks, sample_rows = kal
-        sample_starts = [meta[i]["clip_start"] for i in sample_picks]
-        make_kalyani_plot(X_old[row_idx], sample_rows, sample_starts, recid)
-        print(f"Saved plot: {PLOT_PATH}", file=tee)
+    if x_index is None:
+        section(tee, "SECTIONS 3 & 5 — SKIPPED")
+        print("Could not align X.npy rows to recording_ids on this filesystem.",
+              file=tee)
+        print("(features-dir walk did not match y.npy label sequence.)", file=tee)
         print(file=tee)
+        section4_sanity(tee, X_old, X_clips)
+    else:
+        kal = section3_kalyani(tee, X_old, X_clips, meta, x_index)
+        if kal is not None:
+            row_idx, recid, _raga_name, sample_picks, sample_rows = kal
+            sample_starts = [meta[i]["clip_start"] for i in sample_picks]
+            make_kalyani_plot(X_old[row_idx], sample_rows, sample_starts, recid)
+            print(f"Saved plot: {PLOT_PATH}", file=tee)
+            print(file=tee)
 
-    section4_sanity(tee, X_old, X_clips)
-    section5_todi(tee, X_old, X_clips, meta, x_index)
+        section4_sanity(tee, X_old, X_clips)
+        section5_todi(tee, X_old, X_clips, meta, x_index)
 
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
         f.write(tee.buf.getvalue())
