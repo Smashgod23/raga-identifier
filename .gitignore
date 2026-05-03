@@ -4,6 +4,9 @@ backend/data/ragas/
 backend/data/*.wav
 backend/data/*.npy
 backend/data/audio_clips_meta.json
+backend/data/combined_meta.json
+backend/data/gate1_report.txt
+backend/data/gate1_kalyani_comparison.png
 backend/.env
 __pycache__/
 *.pyc
