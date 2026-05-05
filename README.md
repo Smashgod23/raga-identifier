@@ -199,6 +199,162 @@ The feedback state variables were accidentally placed outside the App component 
 
 ---
 
+## Phase 2: Audio Dataset Expansion
+
+After landing the 84.4% v1 model on the original 689-sample dataset, the obvious bottleneck was data. With 12 CompMusic recordings plus roughly five YouTube samples per raga, the model was overfitting to specific artists and concert acoustics. The feature-extraction pipeline worked well, but it was starving for examples.
+
+### Acquiring the audio dataset
+
+The CompMusic Carnatic corpus has two pieces: the pre-extracted pitch features (publicly available on Zenodo) and the raw audio recordings (not public, distributed through a formal access request). I emailed the Music Technology Group at Universitat Pompeu Fabra explaining the project, got approval, and downloaded the 16GB archive of 480 concert MP3s. Each recording has a median length of 9.75 minutes, with the longest at 67 minutes, totaling roughly 126 hours of Carnatic vocal performance.
+
+### Strategy: clip slicing over augmentation
+
+Two approaches could turn 480 recordings into more training examples: data augmentation (perturb the existing 480 feature vectors) or clip slicing (treat each 30-second window of the original audio as its own training sample). I had already tried augmentation back in v1 and it broke the model. Adding even small Gaussian noise to pitch class distributions destroyed their density properties, and circular shifts to simulate tonic errors hurt similar-raga discrimination because a 30-cent shift is enough to confuse ragas that differ by only one ornamented swara. Clip slicing is the structurally honest alternative: every clip is real audio extracted with the real pipeline, just aimed at a smaller window.
+
+I went with 30-second clips on a 10-second hop, the same window length the inference pipeline uses for live recordings. That choice makes the training distribution match the inference distribution. With those parameters the 480 recordings produce around 44,000 clips, enough to push the per-raga sample count from roughly 17 to over 1,000.
+
+### The recording_id collision bug
+
+The first issue showed up before any clips were processed. I was using the filename as the unique recording_id for each clip, planning to use those IDs later for recording-aware train/test splitting. A code review caught that 42 recordings share song titles across different artists. For example, Sri_Madhava.mp3 appears under two separate Behag artists, and there are similar collisions in eight other ragas. Using just the filename would have let clips from different recordings share the same group label, defeating the whole point of recording-aware splitting. The fix was to use the full relative path from the audio root directory as the recording_id. That guarantees uniqueness, since two recordings in the same artist directory cannot share a filename.
+
+### The auto-tonic verification
+
+Before kicking off the multi-hour clip extraction, I wrote a diagnostic script that ran the existing tonic detector on five random recordings and compared its output against the expert-annotated .tonicFine values from CompMusic. Three out of five were wrong, in three different ways.
+
+**Sahānā at -1196.3 cents (octave error).** T. Brinda's median voiced pitch sat right on the boundary where the tonic detector's octave-folding loop fails to fire. The algorithm picked 91.95 Hz when the true tonic was 183.51 Hz. Exactly one octave low, which is the canonical failure mode for any pitch-folding heuristic.
+
+**Kāmavardani at +700.5 cents (Pa-lock).** The tanpura sustains both Sa and Pa, and the L2-peakedness scorer that picks among candidates preferred the Pa-anchored cents distribution because the singer was sitting on the fifth in the first 90 seconds. Detected tonic was 200% wrong relative to the actual Sa.
+
+**Kāpi at +216.6 cents (Ri2-lock).** The algorithm picked the most ornamented swara during the alapana intro and called that the tonic. In Kāpi, chatusruti rishabha (216.5 cents above Sa) is a vadi swara that gets heavy treatment in the opening, so it dominates the histogram during the first 90 seconds even though Sa is the actual tonic.
+
+The 90-second windows had a roughly 60% failure rate. On 30-second clips the failure rate would have been even higher, since shorter windows have less context for the scorer. That meant a multi-hour pipeline run extracting features anchored to the wrong tonic, and the resulting features would not have been in the same space as the existing X.npy training data.
+
+### The architectural pivot
+
+The fix was to treat tonic detection as a runtime-only concern. CompMusic ships expert-annotated .tonicFine values for every recording, one accurate Hz value per concert. I refactored the clip pipeline to pre-load all 480 expert tonics at startup, hard-abort if any are missing, and pass each as a tonic_override to the feature extraction function. The auto-detection code path in predict.py is unchanged, since live user audio does not have an expert annotation and still has to estimate the tonic at runtime.
+
+The principle is simple: when ground truth exists, use ground truth. The existing X.npy training rows were built from CompMusic's own pitch and tonic annotations, so if the new audio clips also use those same expert tonics, both feature sets share the same coordinate frame. The tonic detector still needs to be good enough for inference, but the entire training data quality is no longer riding on its accuracy.
+
+### The pipeline run
+
+With the tonic fix in place, the pipeline ran for about 7 hours on 7 CPU workers. Pyin (the pitch estimator) is the bottleneck at roughly 4.5 seconds per 30-second clip. The MP3 seek operations are essentially free at 0.04 to 0.11 seconds per clip. The run completed with 44,071 clips, zero errors, and 704 short tail-clips skipped (recordings that ended before producing a full 30-second window from the last hop).
+
+### Gate 1 verification
+
+Before training on the new data I wanted concrete evidence the features actually represent the same thing as the existing X.npy rows. I wrote a verification script (src/gate1_report.py) that picks one recording per target raga that exists in both datasets, prints the top 5 pitch class peaks for each of the three feature channels, and computes cosine similarity between the X.npy vector and clips from the same recording.
+
+For Kalyāṇi, the X.npy vector peaks at Ga (400 cents) and Pa (700 cents), the defining swaras of that raga. The mean of 17 clips from one Kalyāṇi recording matches the X.npy vector with cosine similarity 0.77 across all 360 dimensions, and individual mid-recording clips reach 0.84. Tōḍi shows the same pattern: X.npy peaks at the canonical Tōḍi profile (Ni3, Sa, komal Ga, Pa) and clip-mean cosine similarity is 0.84.
+
+The whole 44,071-clip dataset passed sanity checks: zero NaN values, zero Inf values, no clips with an all-zero channel. Per-channel means match X.npy almost exactly (both at 1/120 = 0.000833, the expected value for normalized 120-bin histograms). Standard deviations are about 1.9 times larger in clips than in full-recording X.npy rows, which is expected, since a 30-second window covers fewer swaras than a 30-minute concert and produces a more peaked distribution.
+
+Within-recording per-clip cosine similarity is around 0.28, only marginally higher than between-raga similarity (0.26 to 0.28). The raga signal is weak per-clip but strong in the aggregate. That tells me the model needs to combine evidence across multiple clips at inference time, which the existing multi-segment voting at inference already does.
+
+### Class imbalance
+
+The clip counts per raga range from 316 (Sencuruṭṭi) to 2,608 (Karaharapriya), an 8.25x ratio. This happens because some ragas are typically explored at greater length in concert, so their CompMusic recordings are longer, and a 10-second hop on a longer recording produces more clips. Trained naively, the loss surface would be dominated by the over-represented ragas.
+
+For the PyTorch model I compute class weights as n_samples / (n_classes * bincount(y_train)) and pass them to nn.CrossEntropyLoss(weight=...). For the sklearn MLPClassifier, which does not support class_weight or sample_weight in its fit method, I oversample minority classes by random replacement up to the median train count. Both approaches give every raga roughly equal influence on the loss.
+
+### Recording-aware splitting
+
+A naive 80/20 train/test split would shuffle all 44,760 rows randomly and split, which leaks information across the boundary in two ways. First, two clips from the same recording with a 10-second hop overlap by 20 seconds of identical audio, so the second clip is essentially a copy of the first. Second, the X.npy row for a CompMusic recording and the 92 audio clips derived from that same recording share most of their pitch information. Either kind of leak would inflate test accuracy without reflecting how the model actually generalizes to new recordings.
+
+I used sklearn's GroupShuffleSplit with the recording_id as the group key. Every CompMusic recording gets one group label that all of its derived clips and its X.npy row share. Each YouTube row gets its own unique group label since YouTube rows are 1:1 with recordings. The split is 80/20 at the recording level, which lands at 36,955 training rows from 551 recordings and 7,805 test rows from 138 recordings, with zero recording_id leakage across the split.
+
+I also flipped early_stopping=False on the sklearn MLPClassifier because its default behavior carves a random 15% out of training for internal validation, and that random 15% would cut across recording boundaries.
+
+### Final v2 results
+
+The v2 PyTorch model finished training in 2.6 minutes (well under the 1 to 3 hour estimate, because it plateaued by epoch 50 and never improved). Final per-clip test accuracy on the recording-aware 80/20 split: **36.77%**, against the v1 baseline of 84.4% on a smaller dataset. The sklearn deployment copy scored 29.74%.
+
+The headline number is misleading because 98% of test rows are per-clip rows. Broken down by source, the picture is more informative:
+
+| Source | Test rows | Test accuracy |
+|--------|-----------|---------------|
+| compmusic (full-recording features) | 96 | 72.92% |
+| youtube (full-recording features) | 42 | 16.67% |
+| audio_clip (per-clip features) | 7,667 | 36.43% |
+
+The model does close to v1 territory on full-recording features (72.92% on the compmusic-source held-out rows), but stalls on per-clip features. The Gate 1 cosine similarity result already pointed at this: within-recording per-clip similarity is only 0.28, so individual 30-second windows do not carry enough raga-specific signal for a per-clip classifier to clear the 40% mark. The model was being asked to classify three contradictory things all labeled the same raga: the Sa-establishment opening clips, the mid-recording exploration clips, and the climax clips. Loss decreased steadily but validation accuracy plateaued at 36.77% by epoch 50 and stayed there for the remaining 150 epochs. Train accuracy kept climbing to 74.78%, the canonical signature of a model running out of useful gradient on the validation set and starting to memorize.
+
+YouTube at 16.67% on 42 test rows is the most surprising finding. Those are full-recording features built the same way as v1's YouTube data, and v1 handled them well. The class-balanced loss together with the 30-second-clip-dominated training mix pushed the model toward window-level decision boundaries that do not transfer to the full-recording shape that YouTube rows produce.
+
+This regression is what drove the Phase 3 redesign.
+
+---
+
+## Phase 3: Multi-Scale Training (in progress as of May 2026)
+
+### The product goal that drove the redesign
+
+The user-facing requirement was clear from the start but I had been ignoring it: the model should work on any length of audio. A 10-second mic recording from someone humming, a 30-second upload, a one-minute alapana clip, a half-hour YouTube concert link. All without the user having to think about which mode to pick or which model handles their case. Length should affect confidence in the prediction, not whether the prediction works at all.
+
+The Phase 2 v2 model failed this requirement on principle. It was trained exclusively on 30-second windows. Anything substantially shorter or longer would either need to be padded, repeated, or chopped, and none of those preserve the pitch class distribution.
+
+### Why the v2 per-clip approach fell short
+
+The 36.77% per-clip plateau was diagnostic. The model was being trained on three contradictory things all labeled the same raga:
+
+1. Intro clips, where the singer is establishing Sa with the tanpura. The pitch distribution looks like a delta at zero cents.
+2. Mid-recording exploration clips, where the actual raga signature shows up.
+3. Climax clips, where the singer is sitting on a vadi swara repeating phrases.
+
+All three got the same label. A classifier asked to map all three to one output learns the union, which is the average of three different distributions, which has lower per-clip discriminative power than any of the three would on its own.
+
+The fix is to let the model see clips at multiple lengths, so it learns "what raga X looks like" as a property that holds across scales rather than as a single window-shaped pattern.
+
+### Ideas considered and rejected
+
+**"Just train on more 30-second clips."** Quantity without diversity does not help. 44,000 clips of one length taught the model less than a balanced multi-scale set is expected to teach it. Doubling the count of 30-second clips would have hit the same per-clip ceiling.
+
+**"Stitch unrelated short clips into longer ones."** Would have created synthetic data with shruti discontinuities at the stitch boundaries (since artists sing in different octaves and at different tonics) and fake transitions that do not match how real performances unfold. The model would learn to recognize the stitches, not the raga.
+
+**"Keep v2 and rely on predict.py's three-segment averaging at inference."** This already works at inference time for audio longer than 3 minutes, where the backend samples 3 segments at 25%, 50%, and 75% through the recording and averages predictions. But the most common user case is short recordings (10 to 60 seconds), and three-segment averaging cannot help when there is only one segment to begin with.
+
+### The chosen solution
+
+Extract features at five window scales directly from the raw audio, sub-sample for raga and scale balance, train one model on the combined set:
+
+| Scale | Window | Hop | Window count |
+|-------|--------|-----|---------------|
+| 15s   | 15s    | 5s  | 90,253        |
+| 30s   | 30s    | 10s | 44,071 (existing v2 data) |
+| 1min  | 60s    | 20s | 22,020        |
+| 3min  | 180s   | 60s | 6,855         |
+| Full recording | full | n/a | 480 (existing X.npy) |
+
+Plus the 209 YouTube full-recording features. Cap each scale at 22,020 (the natural 1-minute count), stratify subsampling by raga with seed 42, and keep the smaller scales (full recording at 689, 3-minute at 6,855) as-is. Total combined dataset estimate: about 73,800 rows.
+
+The model learns scale-invariance because it sees the same raga represented as a 15-second sketch, a 30-second window, a 1-minute alapana phrase, a 3-minute item section, and a full concert. The pitch class distribution is a normalized histogram, so the same underlying raga should produce a similar histogram regardless of how much audio went into computing it (with sampling noise that gets smaller as the window gets longer).
+
+### A correction to the Phase 2 numbers
+
+During Phase 3 planning I re-measured the audio dataset because the new scale extractors needed accurate per-recording durations to estimate runtime. The numbers were not what I had written in the Phase 2 README:
+
+| Metric | Phase 2 README originally | Actual (re-measured) |
+|--------|---------------------------|---------------------|
+| Total audio | 73 hours | 126.4 hours |
+| Median recording | 10 minutes | 9.75 minutes |
+| Longest recording | 57 minutes | 67.1 minutes |
+
+The Phase 2 numbers were estimates I made before I had a script to compute them. The Phase 2 section above has been corrected. The corrected total directly affects the runtime estimate for the new pipeline runs.
+
+### Class imbalance and class_weight='balanced'
+
+The clip counts per raga in the audio_clip data range from 316 (Sencuruṭṭi) to 2,608 (Karaharapriya), an 8.25x ratio. After the multi-scale subsampling the ratio softens because subsampling caps the high end, but it does not go away entirely. For v3 the PyTorch model uses weighted CrossEntropyLoss with weights computed as n_samples / (n_classes * np.bincount(y_train)). The sklearn MLPClassifier does not support class_weight or sample_weight directly, so the deployment copy oversamples minority classes to the median train count before fitting.
+
+### Recording-aware splitting
+
+Same reasoning as Phase 2. A naive 80/20 split would put 30-second clips and 60-second clips from the same recording on different sides of the train/test boundary, which is a leak in two directions: the windows overlap at the audio level, and they share the same per-recording properties (singer, tanpura tuning, microphone, room acoustics). I use sklearn's GroupShuffleSplit with the recording_id as the group key, so all features derived from one recording at all scales stay together.
+
+### Current status
+
+The 15-second extraction completed overnight on May 3, producing 90,253 windows. The 1-minute extraction completed early on May 4, producing 22,020 windows. The 3-minute extraction is running as of this writing and is expected to take about 7 hours, producing roughly 6,855 windows. Once it finishes, the next steps are to combine all six sources, train v3 with the recording-aware split and class-balanced loss, and update this section with final accuracy numbers broken down by scale and by source.
+
+If the multi-scale hypothesis is right, the per-recording vote (which is what production actually serves to users via predict.py's three-segment averaging) should land closer to v1's 84% than to v2's 37%. The interesting question is whether per-clip accuracy at the 15-second scale will be salvageable, since 15 seconds is the shortest realistic mic recording and the model has the least context to work with at that scale.
+
+---
+
 ## Accuracy and Model Performance
 
 | Metric | Value |
@@ -228,10 +384,6 @@ The original 84.4% model is backed up on Hugging Face as raga_sklearn_v1_84pct.p
 ---
 
 ## Next Steps
-
-**Expanded training data from full audio recordings**
-
-The audio clip pipeline (src/preprocess_audio_clips.py) has already run and produced 44,071 clips from the 480 CompMusic concert recordings. The next step is to combine these with the existing 689-sample dataset and retrain using a recording-aware train/test split, where all clips from the same recording stay on the same side of the split. This is required because clips with a 10-second hop from the same concert are heavily correlated, and a naive random split would leak them across train and test, inflating accuracy numbers. The retrained model is expected to improve substantially on hard cases like similar pentatonic ragas.
 
 **Improved tonic detection**
 
