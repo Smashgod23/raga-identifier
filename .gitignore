@@ -13,6 +13,8 @@ backend/data/gate1_report.txt
 backend/data/gate1_kalyani_comparison.png
 backend/data/train_v2_report.txt
 backend/data/train_v3_report.txt
+backend/data/train_v4_report.txt
+backend/data/melspec/
 backend/.env
 __pycache__/
 *.pyc
