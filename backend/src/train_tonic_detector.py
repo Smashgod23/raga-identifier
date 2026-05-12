@@ -3,11 +3,10 @@ Train a learned tonic detector to re-rank the top-5 candidates produced by
 the existing heuristic.
 
 Input data (from extract_tonic_candidates.py):
-  data/tonic_candidates.npz: arrays X, y, rec_idx, cand_rank
+  data/tonic_candidates.npz: arrays X, y, rec_idx
     X       — (N_candidates, 124) float32 features (4 scalars + 120-bin PCD)
     y       — (N_candidates,) int64, 1 if candidate is within ±25 ¢ of expert
     rec_idx — (N_candidates,) int64 recording index (groups for the split)
-    cand_rank — 0..K-1, candidate position within recording
 
 Approach:
   Treat each candidate as a binary example: "is this the correct tonic?".
@@ -89,7 +88,7 @@ class TonicCandidateScorer(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-def evaluate_per_recording(model, X, y, rec_idx, cand_rank, device):
+def evaluate_per_recording(model, X, y, rec_idx, device):
     """For each recording, score all its candidates and pick the highest.
     Return (top1_correct, n_recordings_with_correct_in_topK)."""
     model.eval()
@@ -139,8 +138,7 @@ def main():
 
     arrs = np.load(NPZ_PATH)
     X = arrs["X"]; y = arrs["y"]
-    rec_idx   = arrs["rec_idx"]
-    cand_rank = arrs["cand_rank"]
+    rec_idx = arrs["rec_idx"]
     with open(META_PATH, encoding="utf-8") as f:
         rec_meta = json.load(f)
 
@@ -229,9 +227,9 @@ def main():
 
         # Per-recording top-1 accuracy (same metric the heuristic was scored on).
         train_corr, _, train_n = evaluate_per_recording(
-            model, X_train, y_train, g_train, cand_rank[train_idx], device)
+            model, X_train, y_train, g_train, device)
         test_corr,  _, test_n  = evaluate_per_recording(
-            model, X_test,  y_test,  g_test,  cand_rank[test_idx],  device)
+            model, X_test,  y_test,  g_test,  device)
         train_acc = train_corr / max(1, train_n) * 100
         test_acc  = test_corr  / max(1, test_n)  * 100
         val_acc_trace.append(test_acc)
@@ -257,7 +255,7 @@ def main():
     # ── Final eval on best checkpoint ───────────────────────────────────
     model.load_state_dict(torch.load(PT_PATH, map_location=device))
     test_corr, has_corr, test_n = evaluate_per_recording(
-        model, X_test, y_test, g_test, cand_rank[test_idx], device)
+        model, X_test, y_test, g_test, device)
 
     bar = "=" * 78
     print(bar, file=tee)

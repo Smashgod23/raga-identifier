@@ -68,9 +68,13 @@ def tonicfine_path(audio_path):
 
 
 def _candidates_from_voiced(voiced):
-    """Replicate predict.py._detect_tonic's candidate generation, but
-    return the top-K candidates with their L2 peakedness scores instead
-    of just the best one."""
+    """Replicate predict.py._detect_tonic exactly. Returns the top-K
+    smoothed-histogram peaks as candidate tonics with their production
+    peakedness scores. Keep this in lockstep with `_detect_tonic` — the
+    learned re-ranker has to see the same candidate set at training time
+    that production produces at inference time."""
+    from scipy.ndimage import uniform_filter1d
+
     # Fold all voiced pitches into [60, 120] Hz octave for histogram.
     folded = voiced.copy()
     while np.any(folded > 120):
@@ -78,36 +82,37 @@ def _candidates_from_voiced(voiced):
     while np.any(folded < 60):
         folded = np.where(folded < 60, folded * 2, folded)
 
-    hist, edges = np.histogram(folded, bins=60, range=(60, 120))
-    if hist.max() == 0:
+    # Production: 200-bin histogram + uniform-filter smoothing (size=5).
+    hist, edges = np.histogram(folded, bins=200, range=(60, 120))
+    smoothed = uniform_filter1d(hist.astype(float), size=5)
+    if smoothed.max() == 0:
         return []
 
-    # Take top K bins as candidate tonics.
-    top_idx = np.argsort(hist)[::-1][:TOP_K]
+    # Top K from the *smoothed* histogram, not raw.
+    top_idx = np.argsort(smoothed)[::-1][:TOP_K]
     candidates = []
     median_pitch = float(np.median(voiced))
 
     for idx in top_idx:
-        if hist[idx] == 0:
+        if smoothed[idx] == 0:
             continue
-        # Bin center as candidate Hz, then fold to singer's octave.
         cand_hz = float((edges[idx] + edges[idx + 1]) / 2)
-        # Match production logic: scale up to median pitch's octave.
+        # Production folds the candidate UP toward the singer's octave only —
+        # never down. Folding down was wrong; the singer rarely sings below
+        # their Sa, so folding a low candidate down lands on a non-Sa pitch.
         while cand_hz * 2 < median_pitch:
             cand_hz *= 2
-        while cand_hz / 2 > median_pitch:
-            cand_hz /= 2
 
-        # L2 peakedness score under this candidate (same as production).
+        # Production peakedness score: sum of squared bin counts on the
+        # 120-bin cents-mod-1200 histogram (raw counts, no density flag).
         cents = 1200.0 * np.log2(voiced / cand_hz)
-        cents_mod = cents % 1200
-        h, _ = np.histogram(cents_mod, bins=N_BINS, range=(0, 1200), density=True)
-        peakedness = float(np.linalg.norm(h))
+        h, _ = np.histogram(cents % 1200, bins=N_BINS, range=(0, 1200))
+        peakedness = float(np.sum(h ** 2))
         candidates.append({
             "hz":         cand_hz,
             "peakedness": peakedness,
             "hist_bin":   int(idx),
-            "hist_count": int(hist[idx]),
+            "hist_count": int(smoothed[idx]),  # smoothed weight at peak
         })
     return candidates
 
