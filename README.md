@@ -283,7 +283,7 @@ This regression is what drove the Phase 3 redesign.
 
 ---
 
-## Phase 3: Multi-Scale Training (in progress as of May 2026)
+## Phase 3: Multi-Scale Training
 
 ### The product goal that drove the redesign
 
@@ -347,11 +347,91 @@ The clip counts per raga in the audio_clip data range from 316 (Sencuruṭṭi) 
 
 Same reasoning as Phase 2. A naive 80/20 split would put 30-second clips and 60-second clips from the same recording on different sides of the train/test boundary, which is a leak in two directions: the windows overlap at the audio level, and they share the same per-recording properties (singer, tanpura tuning, microphone, room acoustics). I use sklearn's GroupShuffleSplit with the recording_id as the group key, so all features derived from one recording at all scales stay together.
 
-### Current status
+### Final v3 results
 
-The 15-second extraction completed overnight on May 3, producing 90,253 windows. The 1-minute extraction completed early on May 4, producing 22,020 windows. The 3-minute extraction is running as of this writing and is expected to take about 7 hours, producing roughly 6,855 windows. Once it finishes, the next steps are to combine all six sources, train v3 with the recording-aware split and class-balanced loss, and update this section with final accuracy numbers broken down by scale and by source.
+All five feature scales finished extracting. The combined dataset (`src/build_multiscale_dataset.py`) lands at 72,997 rows after stratified per-scale subsampling, with recording_id preserved across every row so the train/test split stays leak-free. `src/train_v3.py` trains the same RagaNet architecture as v2 (360 in, 256/128/64 with BatchNorm and dropout, 40 out) with weighted cross-entropy on the recording-aware 80/20 split.
 
-If the multi-scale hypothesis is right, the per-recording vote (which is what production actually serves to users via predict.py's three-segment averaging) should land closer to v1's 84% than to v2's 37%. The interesting question is whether per-clip accuracy at the 15-second scale will be salvageable, since 15 seconds is the shortest realistic mic recording and the model has the least context to work with at that scale.
+| Metric | v3 |
+|--------|----|
+| Per-row test accuracy | 38.18% |
+| Per-recording vote (mean softmax across a recording's rows) | 53.62% |
+| Best epoch | early plateau, never recovered |
+
+That is below the v1 production baseline of 84.4% on full-recording features. Per-scale and per-source breakdowns showed the same shape as v2: longer windows beat shorter windows by a wide margin, and per-clip accuracy at the 15-second scale could not climb out of the 30s. The multi-scale hypothesis (that seeing the same raga at 15s, 30s, 1min, 3min, and full-recording would teach scale-invariance) did not hold in practice. The model still learned a window-shaped decision boundary that did not generalize to held-out recordings.
+
+The structural read is that pitch-class histograms throw away phrase order. A raga is partially defined by the sequence in which characteristic phrases appear (the pakad), and a histogram is a bag of pitches with no time information at all. Two ragas that share a swara set but differ in the canonical phrase order project to nearly identical pitch class distributions, so a histogram-based classifier cannot distinguish them no matter how much data it sees. v3 is not deployed. The 84.4% v1 model continues to serve traffic at smashgod23-raga-identifier-api.hf.space.
+
+---
+
+## Phase 4: Mel-Spectrogram CNN (Failed)
+
+If pitch-class histograms cannot capture phrase order, the obvious next step is a representation that preserves time. Log-Mel spectrograms keep both time and frequency, and 2D CNNs were the standard architecture for audio classification before foundation models took over. The hypothesis: a CNN on log-Mel windows should clear the histogram ceiling because it can see when a phrase happens, not just which pitches were touched.
+
+`src/preprocess_melspec.py` pre-computed log-Mel spectrograms once per recording (sr=16kHz, n_fft=2048, hop=512, n_mels=128) so training did not re-compute every epoch. Output landed at roughly 6.7 GB across 480 .npy files. `src/train_v4.py` ran a 2D CNN with 251k parameters on the same recording-aware split as v3, MPS backend on an M2 Mac, warmup plus cosine learning rate schedule.
+
+Three runs to get there. The first attempted to mmap the full spectrogram archive and thrashed on OS file cache eviction. The second cast everything to float16, which fit in RAM but still produced an unstable training loop. The third subsampled n_mels from 128 to 64 and decimated the time axis by 2x, which finally trained cleanly in 24 minutes.
+
+Result: per-recording vote 11.46%. Train accuracy reached 86%, validation accuracy pinned around chance the entire run. The CNN had memorized the 384 training concerts (their tanpura tuning, their microphone, their room reverb, their singer's timbre) without learning anything raga-specific that transferred to the 96 held-out recordings. With 251k parameters and 384 unique recordings, the model had roughly 650 parameters per training recording, which is more than enough capacity to over-fit to recording-level confounders.
+
+The lesson is that the histogram approach's biggest weakness (throwing away phrase order) is also its biggest defense against this failure mode. By collapsing the time axis entirely, it makes the model blind to artist-specific, room-specific, microphone-specific signatures that the CNN happily latched onto.
+
+---
+
+## Phase 5: AST Embedding Classifier (Failed)
+
+The diagnosis from Phase 4 was that from-scratch CNNs do not have the data-efficiency priors needed for 384 training recordings. Foundation models trained on millions of audio clips do have those priors, so the next attempt was MIT's Audio Spectrogram Transformer (AST), pre-trained on AudioSet. The plan: extract the 768-dim CLS embedding from every 10.24-second window of every CompMusic recording, then train a small classifier head on top.
+
+`src/preprocess_ast_embeddings.py` ran AST on MPS at roughly 30 windows per minute and produced 88,518 embeddings from 480 recordings in 2.5 hours. `src/train_v5_ast.py` trained a small MLP head on the recording-aware split.
+
+Result: per-recording vote 3.12%, barely above the 2.5% random-guess baseline for 40 classes. Train accuracy hit 95.88% in 50 epochs while validation pinned at chance level the entire run.
+
+The diagnosis is more interesting than the number. AST's pre-training objective is approximately "what kind of acoustic event is this" (music vs speech vs drums vs sirens vs barking), which is approximately orthogonal to "what raga is this Carnatic vocal performance in". The 768-dim embeddings encode timbre, voice quality, and acoustic event category, all of which are recording-specific rather than raga-specific. Two different ragas performed by the same singer in the same concert hall produce embeddings that cluster together. Two performances of the same raga by different singers in different halls do not. The classifier head learned "concert N maps to embedding cluster N" perfectly, but those clusters do not transfer because the discriminating axis is not raga.
+
+---
+
+## What Five Model Attempts Revealed
+
+| Version | Approach | Per-recording test accuracy |
+|---------|----------|------------------------------|
+| v1 | 360-dim PCD features + MLP, full-recording only | 84.4% (deployed) |
+| v2 | Same features + audio clip slicing (30s windows) | 36.77% per-clip |
+| v3 | Multi-scale PCD features (15s/30s/1min/3min/full) + MLP | 53.62% |
+| v4 | Log-Mel spectrograms + 2D CNN | 11.46% |
+| v5 | AST audio embeddings + MLP head | 3.12% |
+
+The pattern is consistent: the more raw the input, the worse the model does. v1 wins because pitch-class distributions relative to the tonic are the correct inductive bias for this task. Folding to a single octave removes shruti as a confounder, normalizing by tonic removes key as a confounder, and the histogram itself removes singer-specific phrase choices. Everything that survives is raga signature. From-scratch CNNs and general-audio foundation models both throw that bias away and try to relearn it from raw audio without enough data.
+
+The binding limit is 689 unique recordings, not architectural choice. With more data, a CNN or foundation-model approach could plausibly clear v1, because it would have enough signal to learn what to ignore. With 689 recordings, the only model that works is one that already knows what to ignore.
+
+The next round of improvements has to come from somewhere other than the classifier. Two candidates: (1) better tonic detection at inference, since a wrong tonic shifts every feature and the entire prediction goes off, and (2) more training data. Both are tractable. Architectural exploration on the existing dataset is largely exhausted.
+
+---
+
+## Tonic Detector: A Learned Re-Ranker
+
+The first lever was tonic detection. v1 through v3 all use the same heuristic at inference: compute the pitch class distribution under each of several tonic candidates, score each one by how peaked the resulting distribution is (the assumption being that the correct tonic produces the most concentrated PCD), and pick the best. The heuristic gets the tonic right about 47% of the time on held-out CompMusic recordings, measured against the expert .tonicFine annotations. Every wrong tonic produces a feature vector in a different space than the training data and the prediction collapses.
+
+`src/extract_tonic_candidates.py` runs the existing heuristic on the first 60 seconds of each of the 480 CompMusic recordings (after a 10-second tanpura intro skip), generates the same top-5 candidates `predict.py._detect_tonic` would generate, and labels each by distance to the expert tonic. Each candidate is represented as 4 scalars (the candidate frequency, its rank, its peakedness score, its octave-folded position) plus the 120-bin folded PCD computed under that candidate as Sa. Output: 2,400 candidates by 124 dimensions.
+
+`src/train_tonic_detector.py` trains a small MLP (124 to 64 to 32 to 1) with BCEWithLogitsLoss and pos_weight to handle the 1:2.4 imbalance between correct and incorrect candidates. GroupShuffleSplit on recording_id, seed 42. At inference, the model scores all five heuristic candidates and the highest scorer wins.
+
+### The candidate-generation parity bug
+
+The first version of `extract_tonic_candidates.py` did not exactly mirror `predict.py._detect_tonic`. It used a 60-bin histogram instead of 200 bins, no smoothing, bidirectional octave folding, and a slightly different peakedness score. The model trained on those candidates jumped tonic top-1 from 46.9% (heuristic) to 78.1% (learned re-ranker), a +31.2 percentage point lift on the held-out set. That looked too good.
+
+It was. The model had been trained on candidates that production would never see. The "perfect re-ranker ceiling" (top-1 if the model always picked the correct candidate when it was present in the top-5) was 85.4% in the buggy extraction. After rewriting `_candidates_from_voiced` to match `_detect_tonic` exactly (200-bin histogram, `uniform_filter1d(size=5)` smoothing, top-5 from the smoothed histogram, upward-only octave fold, sum-of-squares peakedness), the ceiling dropped to 60.4%. The honest re-extraction and retraining landed at:
+
+| Stage | Tonic top-1 |
+|-------|-------------|
+| Heuristic baseline (production parity) | 50.0% |
+| Perfect re-ranker ceiling | 60.4% |
+| Learned re-ranker | 52.1% |
+
+So the real lift is +2.1 percentage points, not +31.2. The model captures about a fifth of the available headroom on top of the heuristic. The bigger finding is that the heuristic's candidate generation only contains the correct tonic 60.4% of the time, because the upward-only octave fold drops candidates an octave below the actual tonic. A genuinely better tonic detector would change the candidate generation step itself, not just re-rank what is already there. The next iteration is to make the fold bidirectional in production, retrain the re-ranker against that, and re-measure.
+
+The training run did show one healthy signal: the train/test gap was 85.2% vs 78.1% in the buggy run, and roughly 7 points in the corrected run, which is the right shape for a model that is learning a real pattern rather than memorizing. Compare with v4 and v5, both of which hit 86% to 96% train accuracy with chance-level validation. The tonic detector is the right size for the data: too small to memorize 384 recordings, big enough to learn what a real raga PCD looks like under a candidate Sa.
+
+The learned tonic detector is not yet wired into the production inference path. The integration plan is to load `raga_tonic_detector.pkl` alongside the existing model and scaler in `api/main.py`, replace the heuristic argmax inside `_detect_tonic` with a forward pass of the re-ranker over the five candidates, and re-measure raga accuracy end to end. Expected lift on the live system is modest given the +2.1 pp tonic improvement, but the larger value is the diagnostic: it pins down where the actual bottleneck is.
 
 ---
 
@@ -385,9 +465,13 @@ The original 84.4% model is backed up on Hugging Face as raga_sklearn_v1_84pct.p
 
 ## Next Steps
 
-**Improved tonic detection**
+**Wire the learned tonic detector into production**
 
-Tonic detection now evaluates multiple candidates and picks the one producing the most concentrated pitch distribution, which improved accuracy on live recordings. Further improvements could include a dedicated tonic detection model trained specifically for Carnatic music.
+The re-ranker described in the Tonic Detector section above sits at `models/raga_tonic_detector.pkl` and is not yet called from `api/main.py`. The integration is small (one inference call between the existing candidate generation and the existing feature extraction) but needs an end-to-end raga-accuracy re-measurement on the deployed v1 model before it ships.
+
+**Bidirectional octave fold in candidate generation**
+
+The parity-fix work uncovered the real bottleneck: production's `_detect_tonic` only contains the correct tonic in its top-5 candidates 60.4% of the time, because the upward-only octave fold drops candidates an octave low. Making the fold bidirectional should raise the ceiling substantially. The re-ranker would need to be retrained against the new candidate distribution.
 
 **More ragas**
 
@@ -438,9 +522,20 @@ raga-identifier/
 │   ├── src/
 │   │   ├── preprocess.py                  Feature extraction from CompMusic pitch files
 │   │   ├── preprocess_audio_clips.py      Clip slicing pipeline for raw audio
-│   │   ├── train.py                       Model training (PyTorch + sklearn)
+│   │   ├── preprocess_melspec.py          Log-Mel spectrogram precompute (v4)
+│   │   ├── preprocess_ast_embeddings.py   AST CLS embedding extraction (v5)
+│   │   ├── build_multiscale_dataset.py    Combine scale-specific X arrays into X_multiscale
+│   │   ├── combine_datasets.py            Stitch CompMusic + YouTube feature arrays
+│   │   ├── extract_tonic_candidates.py    Generate top-5 tonic candidates per recording
+│   │   ├── train.py                       v1 deployed model training (PyTorch + sklearn)
+│   │   ├── train_v2.py                    v2 per-clip training (failed)
+│   │   ├── train_v3.py                    v3 multi-scale training (53.62% per-recording vote)
+│   │   ├── train_v4.py                    v4 Mel-spec CNN (failed)
+│   │   ├── train_v5_ast.py                v5 AST embedding classifier (failed)
+│   │   ├── train_tonic_detector.py        Learned re-ranker for tonic candidates
 │   │   ├── predict.py                     Inference for live audio
 │   │   ├── download_youtube_data.py       YouTube data collection
+│   │   ├── gate1_report.py                Cross-dataset feature alignment diagnostic
 │   │   ├── verify_tonic_detection.py      Diagnostic: auto-tonic vs expert on 5 recordings
 │   │   └── verify_clip_features.py        Pre-flight check for clip feature quality
 │   ├── data/
