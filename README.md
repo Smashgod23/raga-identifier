@@ -391,13 +391,15 @@ The diagnosis is more interesting than the number. AST's pre-training objective 
 
 ## What Five Model Attempts Revealed
 
-| Version | Approach | Per-recording test accuracy |
-|---------|----------|------------------------------|
-| v1 | 360-dim PCD features + MLP, full-recording only | 84.4% (deployed) |
-| v2 | Same features + audio clip slicing (30s windows) | 36.77% per-clip |
-| v3 | Multi-scale PCD features (15s/30s/1min/3min/full) + MLP | 53.62% |
-| v4 | Log-Mel spectrograms + 2D CNN | 11.46% |
-| v5 | AST audio embeddings + MLP head | 3.12% |
+| Version | Approach | Test accuracy |
+|---------|----------|----------------|
+| v1 | 360-dim PCD features + MLP, full-recording only | 84.4% per-recording (deployed) |
+| v2 | Same features + audio clip slicing (30s windows) | 36.77% per-clip (per-recording vote not measured) |
+| v3 | Multi-scale PCD features (15s/30s/1min/3min/full) + MLP | 53.62% per-recording vote |
+| v4 | Log-Mel spectrograms + 2D CNN (CompMusic only) | 11.46% per-recording vote |
+| v5 | AST audio embeddings + MLP head (CompMusic only) | 3.12% per-recording vote |
+
+v1 and v3 use the full 689-recording corpus (480 CompMusic plus 209 YouTube). v4 and v5 use the CompMusic 480 only, which splits to 384 train and 96 test recordings under the 80/20 recording-aware split. The YouTube rows were excluded from v4 and v5 because both pipelines needed raw audio at fixed window sizes, and the YouTube collection had been built around full-recording features rather than archived audio.
 
 The pattern is consistent: the more raw the input, the worse the model does. v1 wins because pitch-class distributions relative to the tonic are the correct inductive bias for this task. Folding to a single octave removes shruti as a confounder, normalizing by tonic removes key as a confounder, and the histogram itself removes singer-specific phrase choices. Everything that survives is raga signature. From-scratch CNNs and general-audio foundation models both throw that bias away and try to relearn it from raw audio without enough data.
 
