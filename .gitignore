@@ -22,7 +22,10 @@ backend/data/tonic_candidates_meta.json
 backend/data/tonic_detector_report.txt
 backend/.env
 __pycache__/
+**/__pycache__/
 *.pyc
 .playwright-mcp/
+.DS_Store
+__MACOSX/
 # Raw audio dataset — lives outside repo at ~/raga-data-audio/ so never committed
 raga-data-audio/
