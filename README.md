@@ -120,9 +120,9 @@ For a new audio file:
 5. Scale features using the saved StandardScaler
 6. Run inference and return the top 5 predictions with confidence scores
 
-### Backend API (FastAPI, Hugging Face Spaces)
+### Backend API (FastAPI, Railway)
 
-The backend is a FastAPI application deployed on Hugging Face Spaces at smashgod23-raga-identifier-api.hf.space.
+The backend is a FastAPI application deployed on Railway at raga-identifier-production.up.railway.app, built from `backend/Dockerfile` (python:3.11-slim + ffmpeg + libsndfile1).
 
 On startup it downloads the model, scaler, and class list from Hugging Face Hub (Smashgod23/raga-identifier) to avoid storing large files in the git repository.
 
@@ -133,7 +133,7 @@ Endpoints:
 - POST /predict-youtube: accepts a YouTube URL, downloads audio using yt-dlp. For videos longer than 3 minutes, it samples 3 segments from different parts of the video (at 25%, 50%, and 75% through) and averages the predictions, which avoids tuning sections and intros that would throw off the model. Returns top 5 predictions.
 - POST /feedback: accepts user feedback (predicted raga, actual raga, correctness, confidence, audio filename) and stores it in the Supabase feedback table
 
-The backend uses Supabase for storage and the feedback database. Environment variables SUPABASE_URL and SUPABASE_KEY are set in the Hugging Face Spaces secrets configuration.
+The backend uses Supabase for storage and the feedback database. Environment variables SUPABASE_URL and SUPABASE_KEY are set in the Railway service configuration.
 
 ### Frontend (React + Vite, Vercel)
 
@@ -152,7 +152,7 @@ Features:
 ### Infrastructure
 
 - Model storage: Hugging Face Hub (free tier)
-- Backend hosting: Hugging Face Spaces (free tier)
+- Backend hosting: Railway (Hobby tier)
 - Frontend hosting: Vercel (free tier)
 - Database and file storage: Supabase (free tier)
 - Version control: GitHub
@@ -359,7 +359,7 @@ All five feature scales finished extracting. The combined dataset (`src/build_mu
 
 That is below the v1 production baseline of 84.4% on full-recording features. Per-scale and per-source breakdowns showed the same shape as v2: longer windows beat shorter windows by a wide margin, and per-clip accuracy at the 15-second scale could not climb out of the 30s. The multi-scale hypothesis (that seeing the same raga at 15s, 30s, 1min, 3min, and full-recording would teach scale-invariance) did not hold in practice. The model still learned a window-shaped decision boundary that did not generalize to held-out recordings.
 
-The structural read is that pitch-class histograms throw away phrase order. A raga is partially defined by the sequence in which characteristic phrases appear (the pakad), and a histogram is a bag of pitches with no time information at all. Two ragas that share a swara set but differ in the canonical phrase order project to nearly identical pitch class distributions, so a histogram-based classifier cannot distinguish them no matter how much data it sees. v3 is not deployed. The 84.4% v1 model continues to serve traffic at smashgod23-raga-identifier-api.hf.space.
+The structural read is that pitch-class histograms throw away phrase order. A raga is partially defined by the sequence in which characteristic phrases appear (the pakad), and a histogram is a bag of pitches with no time information at all. Two ragas that share a swara set but differ in the canonical phrase order project to nearly identical pitch class distributions, so a histogram-based classifier cannot distinguish them no matter how much data it sees. v3 is not deployed. The 84.4% v1 model continues to serve traffic at raga-identifier-production.up.railway.app.
 
 ---
 
@@ -505,7 +505,7 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 | Model training | PyTorch |
 | Model inference (deployed) | scikit-learn MLPClassifier |
 | Backend API | FastAPI, Python 3.11 |
-| Backend hosting | Hugging Face Spaces |
+| Backend hosting | Railway |
 | Model storage | Hugging Face Hub |
 | Database and file storage | Supabase |
 | Frontend | React, Vite |
@@ -615,7 +615,7 @@ api.upload_file(path_or_fileobj='models/scaler.pkl', path_in_repo='scaler.pkl', 
 "
 ```
 
-Then push to GitHub to trigger a Hugging Face Spaces redeploy.
+Then push to GitHub to trigger a Railway redeploy.
 
 ---
 
