@@ -1,0 +1,25 @@
+==============================================================================
+TDMS evaluation, Phase 1
+Dataset: CompMusic Carnatic, 480 recordings x 40 ragas
+Protocol: 5-fold stratified CV, 5 seeds (same harness as v1 baseline)
+==============================================================================
+
+k-NN (1-NN with top-k ranking by nearest-class-encounter):
+  k-NN (Frobenius)  5-fold CV                         top1 81.79% +/- 0.47   top5 96.88% +/- 0.23
+  k-NN (Frobenius)  leave-one-out                     top1 82.50%               top5 97.50%
+  k-NN (symmetric KL)  5-fold CV                      top1 85.67% +/- 0.40   top5 97.58% +/- 0.21
+  k-NN (symmetric KL)  leave-one-out                  top1 86.67%               top5 97.71%
+  k-NN (Bhattacharyya)  5-fold CV                     top1 85.63% +/- 0.42   top5 97.58% +/- 0.21
+  k-NN (Bhattacharyya)  leave-one-out                 top1 86.67%               top5 97.71%
+
+MLP variants:
+  MLP on flat TDMS                                    top1 75.67% +/- 1.08   top5 92.17% +/- 0.60
+  MLP on TDMS + 360-D concat                          top1 77.46% +/- 1.73   top5 94.33% +/- 0.96
+
+Comparison to Phase 0 baseline:
+  v1 (MLP on 360-D pitch)  5-fold CV                  top1 71.79% +/- 0.84   top5 94.25% +/- 0.21
+
+Paper reference (Gulati et al. ISMIR 2016, leave-one-out):
+  k-NN (symmetric KL)            CMD             top1 86.7%
+  k-NN (Bhattacharyya)           CMD             top1 86.7%
+  PCD baseline (Chordia+Senturk) CMD             top1 73.1%

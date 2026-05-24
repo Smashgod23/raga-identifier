@@ -9,6 +9,7 @@ backend/data/15s_meta.json
 backend/data/1min_meta.json
 backend/data/3min_meta.json
 backend/data/multiscale_meta.json
+backend/data/tdms_meta.json
 backend/data/gate1_report.txt
 backend/data/gate1_kalyani_comparison.png
 backend/data/train_v2_report.txt
