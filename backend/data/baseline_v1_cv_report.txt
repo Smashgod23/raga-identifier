@@ -1,0 +1,35 @@
+========================================================================
+v1 baseline (sklearn MLP on 360-D pitch features), 5-fold CV
+Dataset: CompMusic Carnatic, 480 recordings × 40 ragas
+Seeds: 5  |  Folds: 5  |  Elapsed: 3.4s
+========================================================================
+
+HEADLINE
+  Top-1 accuracy: 71.79% ± 0.84%
+  Top-5 accuracy: 94.25% ± 0.21%
+
+WORST 5 RAGAS (per-class top-1, summed across seeds and folds)
+  Śrī                              23.3% (14/60)
+  Kāṁbhōji                         23.3% (14/60)
+  Kānaḍa                           41.7% (25/60)
+  Harikāmbhōji                     41.7% (25/60)
+  Bilahari                         43.3% (26/60)
+
+BEST 5 RAGAS
+  Varāḷi                          100.0% (60/60)
+  Gauḷa                           100.0% (60/60)
+  Nāṭa                             93.3% (56/60)
+  Tōḍi                             91.7% (55/60)
+  Rītigauḷa                        91.7% (55/60)
+
+TOP 10 CONFUSION PAIRS (true → predicted)
+  Kāṁbhōji                  → Harikāmbhōji               32
+  Śrī                       → Madhyamāvati               24
+  Harikāmbhōji              → Kāṁbhōji                   23
+  Hussēnī                   → Mukhāri                    15
+  Bhairavi                  → Mukhāri                    14
+  Behāg                     → Śankarābharaṇaṁ            12
+  Sahānā                    → Sāma                       12
+  Bilahari                  → Bēgaḍa                     11
+  Madhyamāvati              → Aṭāna                      10
+  Madhyamāvati              → Śrī                        10
