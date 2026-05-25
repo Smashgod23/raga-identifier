@@ -1,0 +1,14 @@
+==============================================================================
+TDMS-from-audio A/B benchmark vs v1 (Phase 2 step 1)
+Source: live pyin + tonic heuristic on 60s middle window of each mp3
+Recordings: 478/480
+==============================================================================
+
+  v1 MLP on audio 360-D features                top1  8.32% +/- 0.93   top5 28.57% +/- 1.60
+  TDMS k-NN (sym KL) on audio TDMS              top1 37.36% +/- 1.00   top5 67.91% +/- 0.81
+  TDMS k-NN: train EXPERT, test AUDIO           top1 23.56% +/- 0.21   top5 50.76% +/- 0.28
+  TDMS k-NN: train AUDIO, test EXPERT           top1 17.20% +/- 0.62   top5 48.87% +/- 1.03
+
+Reference (Phase-0 / Phase-1, expert pitch, 5-fold CV):
+  v1 baseline (MLP on expert 360-D)             top1 71.79% +/- 0.84   top5 94.25% +/- 0.21
+  TDMS k-NN sym KL (expert templates)           top1 85.67% +/- 0.40   top5 97.58% +/- 0.21
