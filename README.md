@@ -393,11 +393,13 @@ The diagnosis is more interesting than the number. AST's pre-training objective 
 
 | Version | Approach | Test accuracy |
 |---------|----------|----------------|
-| v1 | 360-dim PCD features + MLP, full-recording only | 84.4% per-recording (deployed) |
+| v1 | 360-dim PCD features + MLP, full-recording only | 84.4% per-recording (deployed, see caveat below) |
 | v2 | Same features + audio clip slicing (30s windows) | 36.77% per-clip (per-recording vote not measured) |
 | v3 | Multi-scale PCD features (15s/30s/1min/3min/full) + MLP | 53.62% per-recording vote |
 | v4 | Log-Mel spectrograms + 2D CNN (CompMusic only) | 11.46% per-recording vote |
 | v5 | AST audio embeddings + MLP head (CompMusic only) | 3.12% per-recording vote |
+
+**Caveat on the v1 number.** The 84.4% in the table is from a single random 80/20 split of 689 mixed CompMusic+YouTube samples — the same recording's clips could legally land in both train and test under v1's split, which inflates the number. Under a clean 5-fold stratified CV (the protocol every published baseline in the field uses) the same v1 recipe lands at **71.79% ± 0.84% top-1 / 94.25% ± 0.21% top-5** on the CompMusic 480-recording set. The leaky 84.4% is what got reported originally; the 71.79% is what v1 actually delivers on a fair evaluation. The Phase 6+ work below uses this number as the honest baseline.
 
 v1 and v3 use the full 689-recording corpus (480 CompMusic plus 209 YouTube). v4 and v5 use the CompMusic 480 only, which splits to 384 train and 96 test recordings under the 80/20 recording-aware split. The YouTube rows were excluded from v4 and v5 because both pipelines needed raw audio at fixed window sizes, and the YouTube collection had been built around full-recording features rather than archived audio.
 
@@ -437,16 +439,162 @@ The learned tonic detector is not yet wired into the production inference path. 
 
 ---
 
+## Phase 6: An Honest Re-baseline of v1
+
+Months after v1 shipped, I went back and built a real evaluation harness. The 84.4% number that lives in the README header came from a single random 80/20 split of 689 mixed CompMusic+YouTube samples. Because the split didn't enforce recording-aware boundaries, the same recording's training and testing data could legally end up on opposite sides of the split. With a recording-aware 5-fold stratified CV protocol — the same protocol every published baseline in the field uses — the same v1 recipe lands at **71.79% ± 0.84% top-1 / 94.25% ± 0.21% top-5** on the CompMusic 480-recording set.
+
+That gap (84.4 → 71.79) is the "leaky-split tax." I'm leaving the 84.4% in the table above because it's what was originally reported, but the 71.79% is what v1 actually delivers on a fair evaluation, and everything that follows uses this as the honest baseline.
+
+The eval harness lives at `backend/src/eval_harness.py` and exposes three primitives: recording-level stratified k-fold CV, recording-aware splits (with no clip leakage across train/test), and clip-to-recording vote aggregation that mirrors what the deployed API does at inference. Every experiment from Phase 6 onward gets graded against this single ruler. The script that produced the 71.79% number is `backend/src/baseline_v1_cv.py`.
+
+The top confusion pairs in v1's honest evaluation are textbook allied-raga errors: Kāṁbhōji ↔ Harikāmbhōji (32 misclassifications), Śrī → Madhyamāvati (24), Hussēnī → Mukhāri (15), Bhairavi → Mukhāri (14). These are pairs that share the same set of swaras but differ in the gait (calan) and characteristic phrases (pakad). v1's pitch-class histograms throw that gait signal away — exactly the v3 retrospective.
+
+---
+
+## Phase 7: TDMS Replicates the Paper at 86.67%
+
+After the honest re-baseline, I wanted a feature that could capture phrase order rather than discarding it. The right reference turned out to be **Gulati, Serrà, Ganguli, Şentürk, Serra — "Time-Delayed Melody Surfaces for Rāga Recognition" (ISMIR 2016)**, which runs on the exact CompMusic 480-recording 40-raga dataset I have and reports 86.7% top-1 with a k-nearest-neighbor classifier. The lab is Xavier Serra's MTG at UPF Barcelona — the same group whose CompMusic project I'm sourcing all my data from, and Kaustuv Kanti Ganguli (a co-author) is one of the researchers Meinard Müller pointed me at when I wrote to him.
+
+A TDMS is a 120 × 120 joint distribution of (pitch-class at time `t`, pitch-class at time `t + τ`) built from the tonic-normalized predominant-pitch contour. Where v1's 360-D feature is three 1D pitch-class histograms, a TDMS is a single 2D matrix that encodes "which note follows which note." Allied ragas that share swaras but differ in gait project to different TDMSs, even though their 1D pitch histograms look nearly identical.
+
+I implemented TDMS from the paper's exact spec. `backend/src/build_tdms.py` is roughly 140 lines of NumPy + scipy.ndimage:
+
+| Hyperparameter | Value (paper) | Value (this implementation) |
+|---|---|---|
+| Bins per dimension (η) | 120 (10 cents/bin) | 120 |
+| Time delay (τ) | 0.3 seconds | 0.3 |
+| Power compression (α) | 0.75 | 0.75 |
+| Gaussian smoothing (σ) | 2 bins, circular convolution | 2, scipy `mode='wrap'` |
+| Normalization | L1 (the matrix sums to 1) | L1 |
+| Classifier | 1-NN with symmetric KL or Bhattacharyya distance | identical |
+
+I ran the full 480 recordings through `backend/src/extract_tdms_features.py` using CompMusic's expert pitch contours (`.pitchSilIntrpPP`) and expert tonics (`.tonicFine`), producing `data/X_tdms.npy` (480 × 14400 float32). Total extraction time on M-series: 40 seconds.
+
+`backend/src/train_tdms.py` then evaluates five variants under the Phase-6 harness:
+
+| Variant | 5-fold CV top-1 | 5-fold CV top-5 | Leave-one-out top-1 |
+|---|---|---|---|
+| v1 baseline (MLP on 360-D PCD) | 71.79% ± 0.84 | 94.25% ± 0.21 | — |
+| k-NN Frobenius (M_F) | 81.79% ± 0.47 | 96.88% ± 0.23 | 82.50% |
+| k-NN symmetric KL (M_KL) | **85.67% ± 0.40** | **97.58% ± 0.21** | **86.67%** |
+| k-NN Bhattacharyya (M_B) | 85.63% ± 0.42 | 97.58% ± 0.21 | 86.67% |
+| MLP on flat TDMS | 75.67% ± 1.08 | 92.17% ± 0.60 | — |
+| MLP on TDMS + 360-D concat | 77.46% ± 1.73 | 94.33% ± 0.96 | — |
+
+**The leave-one-out 86.67% with symmetric KL exactly matches the paper's 86.7%.** Independent reproduction on the same data with the same algorithm, to within 0.03 percentage points. Under the 5-fold CV comparison to v1, TDMS gains **+13.88 pp top-1** (71.79 → 85.67) and **+3.33 pp top-5** (94.25 → 97.58).
+
+The 1-NN beats both MLPs because 480 samples and 14400 features overfit any neural network without strong regularization. The matrix-aware distances (symmetric KL and Bhattacharyya are proper divergences for probability matrices) respect the joint-distribution geometry that MLP weights blow up. The paper found the same thing.
+
+This was the moment I thought the problem was solved. It was not.
+
+---
+
+## Phase 8: The Audio-Feature Gap
+
+Phase 7 worked on expert features. The deployed API does not have expert features. It runs `librosa.pyin` on the user's audio, detects a tonic with `predict.py._detect_tonic`'s heuristic, and computes a 360-D PCD vector from the resulting contour. The trained model has never seen pyin-derived features — it was trained on CompMusic's `.pitchSilIntrpPP` files, which use Salamon and Gómez's predominant-melody method specifically tuned for polyphonic Indian classical music.
+
+So I built `backend/src/eval_audio_ab.py`, which extracts a 60-second middle window from every CompMusic mp3 (the audio is at `~/raga-data-audio/`, 7.5 GB total), runs the production pipeline (pyin + heuristic tonic) once per recording with a 6-worker `ProcessPoolExecutor`, and from that single pitch contour computes both v1's 360-D feature and a 120 × 120 TDMS. Then it runs four 5-fold-CV evaluations:
+
+| Configuration | 5-fold CV top-1 | 5-fold CV top-5 |
+|---|---|---|
+| Phase 7 reference: TDMS on EXPERT pitch + EXPERT tonic | 85.67% ± 0.40 | 97.58% ± 0.21 |
+| Phase 6 reference: v1 on EXPERT pitch | 71.79% ± 0.84 | 94.25% ± 0.21 |
+| **TDMS on AUDIO pitch + heuristic tonic** | **37.36% ± 1.00** | **67.91% ± 0.81** |
+| **v1's MLP on AUDIO 360-D features** | **8.32% ± 0.93** | **28.57% ± 1.60** |
+| Train EXPERT templates, query AUDIO TDMS | 23.56% ± 0.21 | 50.76% ± 0.28 |
+| Train AUDIO templates, query EXPERT TDMS | 17.20% ± 0.62 | 48.87% ± 1.03 |
+
+Three findings landed:
+
+**1. The deployed v1 model is near random on real audio.** Under the runtime pipeline (pyin + heuristic tonic + 360-D PCDs), v1's accuracy collapses from 71.79% to 8.32% top-1 — about 3× above the 2.5% chance floor for 40 classes. The 84.4% number the live site is implicitly making claims with bears no relationship to what users are actually getting. v1's nyas/duration/stable PCD channels were carved out using CompMusic's hand-annotated stable-note regions (`.flatSegNyas`) and a 4.44 ms hop expert pitch. When the runtime stack hands it a noisy pyin contour at 16 ms hop with no nyas annotation, the channels distribute differently and the trained MLP doesn't recognize them. This is a textbook covariate shift between training and inference.
+
+**2. TDMS on audio is 4.5× better than v1 on audio.** Same audio, same window, same pyin extraction — only the feature changes. TDMS lands at 37.36% top-1 / 67.91% top-5, vs v1 at 8.32% / 28.57%. The joint pitch-class distribution is dramatically more robust to pitch-extraction noise than concatenated 1D PCDs. Gaussian smoothing on a 14400-cell surface averages noise out. The matrix-aware distances preserve the *relative* ordering of training matrices even when the absolute values drift. v1's MLP weights have no such tolerance.
+
+**3. Cross-source templates do not transfer.** Training on the Phase 7 expert templates and querying with audio TDMSs only hits 23.56% top-1. The reverse (train audio, test expert) is 17.20%. For deployment we cannot reuse the Phase 7 index — templates have to be rebuilt from audio using the same pyin pipeline the user's queries will run through.
+
+So the deployable candidate now is "TDMS on audio + 1-NN with symmetric KL, templates rebuilt from audio." That clears v1 in production by 4.5×, but 37.36% top-1 is still far from the 86.67% paper-replication ceiling. Two phases of bottleneck isolation followed.
+
+---
+
+## Phase 9: Isolating the Bottleneck (Tonic vs Pitch vs Window)
+
+The gap from 86.67% (expert templates) to 37.36% (audio templates) has three possible sources: tonic quality, pitch quality, and window length. Phase 9 runs a controlled experiment to attribute the gap.
+
+### Phase 9a — Audio pitch + EXPERT tonic
+
+`backend/src/eval_audio_expert_tonic.py` reruns Phase 8's audio extraction but substitutes each recording's `.tonicFine` for the heuristic-detected tonic. Same 60s middle window, same pyin pitch, same TDMS algorithm, same eval harness. The only thing that changes is the tonic.
+
+Result: **45.81% ± 1.55% top-1, 82.93% ± 0.32% top-5.**
+
+So the tonic alone accounts for **+8.45 pp top-1** and **+15.02 pp top-5**. That's a meaningful contribution but it is not the dominant bottleneck. The remaining gap to the 86.67% ceiling is ~40 pp, of which only about a quarter is tonic. The top-5 number is striking, though — at 82.93%, the audio pipeline with a correct tonic puts the right raga in the top 5 most of the time. It's the top-1 disambiguation that fails.
+
+This validates wiring the existing `tonic_detector_v1.pt` re-ranker (+2.1 pp from Phase 5b) into production — it's the cheapest deployable improvement — but it also says that tonic detection is not the principal failure mode.
+
+### Phase 9b — CREPE pitch + EXPERT tonic
+
+The remaining gap is split between pitch quality and window length. Window length is easy to scale up but expensive (longer audio = more pyin time per query, which has UX implications at inference). Pitch quality is the harder lever, but if the published SOTA is right about CREPE, switching the extractor could close most of the gap with a fixed-cost change.
+
+The reference for this is **Vishwaas Narasinh Senthil Raja — "Sequential Pitch Distributions for Raga Detection" (AIMC 2023)**, which beats TDMS on CMD (88.13% vs 86.7%) using an extended SPD feature and explicitly recommends CREPE (Kim, Salamon, Li, Bello — ICASSP 2018) as the runtime pitch extractor. CREPE is a CNN-based monophonic pitch estimator trained on a large dataset of human voice and musical instrument pitches; it's substantially more accurate than pyin on noisy, monophonically-extracted melodies from polyphonic recordings.
+
+`backend/src/eval_crepe_audio.py` mirrors Phase 9a but swaps `librosa.pyin` for `crepe.predict` with `model_capacity='small'` and 30 ms step size (matching the SPD paper). Expert tonic. Same 60s middle window. Same TDMS algorithm.
+
+Result: **51.51% ± 1.10% top-1, 87.36% ± 0.43% top-5.**
+
+CREPE buys **+5.70 pp top-1 and +4.43 pp top-5** over pyin on identical audio with identical tonic. A real improvement, but smaller than I hoped — pyin is not as bad as I expected at this granularity. The full ladder of bottleneck attribution:
+
+| Step | Pitch | Tonic | Window | Top-1 | Δ |
+|---|---|---|---|---|---|
+| Phase 1 ceiling | expert | expert | full recording | 85.67% | — |
+| Phase 9b | CREPE small | expert | 60s | 51.51% | −34.16 pp |
+| Phase 9a | pyin | expert | 60s | 45.81% | −5.70 pp (vs CREPE) |
+| Phase 8 | pyin | heuristic | 60s | 37.36% | −8.45 pp (vs expert tonic) |
+| v1 deployed (audio) | pyin | heuristic | 60s | 8.32% | feature change to v1 360-D |
+
+So the 34-pp gap from CREPE-60s to the Phase 1 ceiling decomposes roughly as:
+- ~6 pp from pitch quality (CREPE vs full Salamon–Gómez plus CompMusic's post-processing)
+- ~?? pp from 60s vs full-recording (the dominant remaining factor — TDMS gets statistically denser with more pitch frames)
+- ~?? pp from miscellaneous (singer-tonic interaction, voicing differences, RMS normalization)
+
+The clear lesson is that **no single audio-side substitution closes the gap to the expert-feature ceiling.** Tonic detector + CREPE + expert tonic, even stacked, is unlikely to reach 70% on 60s clips. The most leveraged remaining experiment is window length — extracting from a 3-minute window instead of 60s, or aggregating TDMSs across multiple windows of the same recording. This is Phase 10 work.
+
+Top-5 at 87.36% is the surprising number, though. The audio pipeline with CREPE puts the right raga in the top 5 *87% of the time*. That's a deployable "did you mean?" UX: show 5 candidates with a short audio sample of each, let the user pick. The model doesn't have to be right on top-1 if the interaction surface absorbs the uncertainty.
+
+### What's left after Phase 9
+
+Open levers, in expected-value order:
+
+1. **Wire the tonic detector** (`models/tonic_detector_v1.pt`) into `api/main.py`. Worth +2.1 pp on tonic accuracy → up to +5-8 pp on raga top-1 in the audio pipeline based on Phase 9a. One day of work.
+2. **Switch pyin → CREPE in production** if Phase 9b confirms the swap helps. CREPE adds ~3-5 seconds of latency per query on CPU; that's user-visible but not unacceptable if it doubles accuracy.
+3. **Multi-window voting at inference.** Currently `predict.py` extracts features from one 60s window. Extracting from three windows (25%/50%/75% through the recording) and averaging their probability distributions should reduce variance from any single bad clip.
+4. **Move from 360-D PCD to TDMS as the primary feature.** This requires rebuilding the 480 templates from audio (Phase 8 cross-source numbers showed expert templates don't generalize), serving them from Hugging Face Hub, and changing `_detect_tonic` + `extract_features_from_audio` to produce TDMS instead.
+5. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** A learned sequence model is the natural complement to TDMS's statistical phrase-order capture. ISMIR 2019 reports 88.1% on this dataset. The training cost is real but the data is there.
+
+What's explicitly NOT a good lever based on Phase 4-8 evidence: bigger from-scratch CNNs, general-audio foundation model embeddings, or data augmentation on the existing 689 recordings. Those have all been tried and failed for principled reasons documented above.
+
+---
+
 ## Accuracy and Model Performance
 
 | Metric | Value |
 |---|---|
 | Number of ragas | 40 |
 | Training samples | 689 (480 CompMusic + 209 YouTube) |
-| Feature dimensions | 360 |
+| Feature dimensions | 360 (v1 deployed), 14,400 (TDMS candidate) |
 | Baseline (random guessing) | 2.5% |
 
-The model performs best on ragas with very distinctive swara sets. On real recordings, Todi came in at 97.9% confidence, Kalyani at 97.3%, and Shankarabharanam at 97.6% (from the middle of an MS Subbulakshmi recording). The hardest cases are pentatonic ragas that share many swaras, like Mohanam and Bilahari, where the difference lies in specific ornamental patterns rather than the swara set alone.
+The honest accuracy story, ordered from the most generous evaluation protocol to the most realistic:
+
+| Setup | Top-1 | Top-5 |
+|---|---|---|
+| v1, leaky random 80/20 split (the original "84.4%") | 84.4% | — |
+| v1 baseline (MLP on expert 360-D PCD, 5-fold CV) | 71.79% | 94.25% |
+| TDMS k-NN sym KL (expert pitch + tonic, 5-fold CV) | 85.67% | 97.58% |
+| TDMS k-NN sym KL (expert pitch + tonic, leave-one-out) — paper match | 86.67% | 97.71% |
+| TDMS k-NN sym KL (pyin pitch + expert tonic, 60s clip) | 45.81% | 82.93% |
+| TDMS k-NN sym KL (pyin pitch + heuristic tonic, 60s clip) | 37.36% | 67.91% |
+| v1 deployed pipeline (pyin + heuristic tonic, 60s clip) | 8.32% | 28.57% |
+
+The model performs best on ragas with very distinctive swara sets. On real recordings, Todi came in at 97.9% confidence, Kalyani at 97.3%, and Shankarabharanam at 97.6% (from the middle of an MS Subbulakshmi recording) — though those confidence numbers come from the model that's actually only ~8% accurate on top-1 in benchmark, so they should be read as "what the model thinks" rather than "how often the model is right." The hardest cases at the research-evaluation level (expert features) are pentatonic ragas that share many swaras, like Mohanam and Bilahari, where the difference lies in specific ornamental patterns rather than the swara set alone. At the deployment level (pyin features), basically every prediction is hard.
 
 ---
 
@@ -467,9 +615,21 @@ The original 84.4% model is backed up on Hugging Face as raga_sklearn_v1_84pct.p
 
 ## Next Steps
 
+**Replace v1 with TDMS-on-audio in production**
+
+This is the headline next step. The Phase 8 benchmark shows v1's deployed pipeline at 8.32% top-1 and TDMS-on-audio at 37.36% top-1 on the same audio. Deployment requires three pieces: rebuilding the 480 templates from audio (not from expert pitch — Phase 8 cross-source numbers showed those don't generalize), uploading them to Hugging Face Hub alongside `raga_sklearn.pkl`, and rewriting `predict.py`'s feature extraction to produce a 14400-D TDMS instead of the current 360-D PCD. The 1-NN lookup is fast (one symmetric-KL distance per template, 480 templates total — a few milliseconds).
+
+**Switch pyin to CREPE in the audio pipeline**
+
+Phase 9b showed CREPE (model='small') gives +5.7 pp top-1 and +4.4 pp top-5 over pyin on identical audio with identical tonic. The cost is real — CREPE adds ~3-5 seconds of inference latency per 60s clip on CPU — but the accuracy gain is enough to justify it given how broken the v1 audio path is. The full CREPE model (`model_capacity='full'`) might add another 1-2 pp at the cost of much higher latency; not worth it unless Phase 10's longer-window experiment changes the calculus.
+
+**Phase 10: longer windows and multi-window aggregation**
+
+The 60s-vs-full-recording gap is what's left in the bottleneck attribution. The same CREPE + expert-tonic pipeline applied to the entire 30-minute recording instead of a 60s middle window should land much closer to the 85.67% Phase 1 ceiling. Production can't do that on every query (the user is uploading a short clip), but the *template index* can be built from full audio, which makes the asymmetry between train and inference work in our favor — long, dense templates queried by short, sparse user clips. Multi-window aggregation at inference (average TDMSs from three 60s windows of the user's upload before the 1-NN lookup) is the matched-cost variant. Phase 10 will run both.
+
 **Wire the learned tonic detector into production**
 
-The re-ranker described in the Tonic Detector section above sits at `models/raga_tonic_detector.pkl` and is not yet called from `api/main.py`. The integration is small (one inference call between the existing candidate generation and the existing feature extraction) but needs an end-to-end raga-accuracy re-measurement on the deployed v1 model before it ships.
+The re-ranker described in the Tonic Detector section above sits at `models/tonic_detector_v1.pt` and is not yet called from `api/main.py`. The integration is small (one inference call between the existing candidate generation and the existing feature extraction). Phase 9a says this is worth +2.1 pp on tonic accuracy and on the order of +5-8 pp on raga top-1 in the audio pipeline — modest but cheap.
 
 **Bidirectional octave fold in candidate generation**
 

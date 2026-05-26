@@ -1,0 +1,19 @@
+==============================================================================
+CREPE pitch + EXPERT tonic (Phase 2 step 3: pitch-extractor diagnostic)
+Pitch: CREPE model=small step=30ms, Tonic: .tonicFine (expert)
+Window: 60s middle, Recordings: 478/480
+==============================================================================
+
+  TDMS k-NN (sym KL), CREPE + expert tonic       top1 51.51% +/- 1.10   top5 87.36% +/- 0.43
+
+Comparison ladder:
+  Phase 1 expert (.pitch + .tonicFine, full rec)   top1 85.67% +/- 0.40   top5 97.58%
+  Phase 2 step 3: CREPE + expert tonic, 60s        top1 51.51% +/- 1.10   top5 87.36%
+  Phase 2 step 2: pyin + expert tonic, 60s         top1 45.81% +/- 1.55   top5 82.93%
+  Phase 2 step 1: pyin + heuristic tonic, 60s      top1 37.36% +/- 1.00   top5 67.91%
+  v1 audio (deployed reality)                      top1  8.32% +/- 0.93   top5 28.57%
+
+Interpretation:
+  - If CREPE+expert_tonic >= 70%, pitch extractor was the bottleneck.
+  - If CREPE+expert_tonic ~ 50-65%, both pitch and window length contribute.
+  - If CREPE+expert_tonic ~ 45-50%, window length / sparsity dominates.

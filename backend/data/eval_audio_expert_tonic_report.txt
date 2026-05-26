@@ -1,0 +1,17 @@
+==============================================================================
+Audio TDMS with EXPERT tonic (Phase 2 step 2: bottleneck isolation)
+Pitch: pyin (runtime), Tonic: .tonicFine (expert), Window: 60s middle
+Recordings: 478/480
+==============================================================================
+
+  TDMS k-NN (sym KL), audio + expert tonic     top1 45.81% +/- 1.55   top5 82.93% +/- 0.32
+
+Comparison:
+  Phase 2 step 1 (audio + heuristic tonic)     top1 37.36% +/- 1.00   top5 67.91% +/- 0.81
+  Phase 1 expert templates                     top1 85.67% +/- 0.40   top5 97.58% +/- 0.21
+  v1 audio (production reality)                top1  8.32% +/- 0.93   top5 28.57% +/- 1.60
+
+Interpretation:
+  - If audio+expert_tonic >= 70%, tonic is the dominant bottleneck.
+  - If audio+expert_tonic in 40-60%, both tonic and pitch contribute.
+  - If audio+expert_tonic <= 45%, pitch (pyin) is the bottleneck.

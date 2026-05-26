@@ -8,6 +8,7 @@ arrow==1.4.0
 asttokens==3.0.1
 async-lru==2.2.0
 attrs==25.4.0
+crepe==0.0.16
 audioread==3.1.0
 azure-common==1.1.28
 azure-core==1.38.3
