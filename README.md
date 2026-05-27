@@ -10,9 +10,9 @@ Contact: theprathamaithal@gmail.com
 
 ## What This Is
 
-Raga Identifier is a web application that listens to Carnatic music, either recorded live from a microphone, uploaded as an audio file, or provided via a YouTube link, and identifies which raga is being performed. Think of it as Shazam for Carnatic ragas. The system currently recognizes 40 Carnatic ragas, trained on 689 samples from the CompMusic research dataset and YouTube recordings.
+Raga Identifier is a web application that listens to Carnatic music, either recorded live from a microphone, uploaded as an audio file, or provided via a YouTube link, and identifies which raga is being performed. Think of it as Shazam for Carnatic ragas. The system currently recognizes 40 Carnatic ragas. The original v1 model is trained on 689 samples from the CompMusic research dataset and YouTube recordings; a newer Time-Delayed Melody Surface (TDMS) k-NN model has since been built and validated against the same evaluation harness and clears v1 by roughly 14 percentage points on a fair benchmark, though it is not yet wired into the live API.
 
-I built this project from scratch to connect two of my personal interests: Carnatic vocal music and machine learning. It is not a wrapper around a pre-existing API. I designed, trained, and deployed the model entirely from the ground up.
+I built this project from scratch to connect two of my personal interests: Carnatic vocal music and machine learning. It is not a wrapper around a pre-existing API. I designed, trained, evaluated, and deployed the model entirely from the ground up, including independently re-implementing the published state-of-the-art feature (TDMS, Gulati et al. ISMIR 2016) and reproducing the paper's headline 86.7% accuracy on the same dataset.
 
 ---
 
@@ -82,6 +82,10 @@ The project is split into three layers: the ML pipeline, the backend API, and th
 
 ### ML Pipeline (Python, local)
 
+The repository has **two parallel ML pipelines**: the original v1 (currently deployed) and the TDMS k-NN candidate built during Phase 6-9 that is not yet wired into production.
+
+#### v1 pipeline (deployed)
+
 **Feature Extraction (src/preprocess.py)**
 
 For each recording in the dataset, I:
@@ -106,7 +110,7 @@ I trained a feedforward neural network using PyTorch with the following architec
 - Hidden layer 3: 64 units, ReLU
 - Output: 40 classes (one per raga)
 
-Training uses Adam optimizer with learning rate 0.001 and weight decay 1e-4, with a step learning rate scheduler. Training runs for 200 epochs and the best checkpoint is saved. The model achieves 84.4% accuracy on a held-out 20% test set.
+Training uses Adam optimizer with learning rate 0.001 and weight decay 1e-4, with a step learning rate scheduler. Training runs for 200 epochs and the best checkpoint is saved. The model originally reported 84.4% accuracy on a random 80/20 split, but under a recording-aware 5-fold CV (the protocol every published baseline uses) the same recipe lands at 71.79% top-1 / 94.25% top-5 — see Phase 6 below for the honest re-baseline. The runtime audio pipeline (pyin + heuristic tonic + this trained MLP) collapses further to about 8% top-1 because of covariate shift between the expert features the MLP was trained on and the pyin features it gets at inference — see Phase 8.
 
 For deployment, the PyTorch model is converted to a scikit-learn MLPClassifier (same architecture) to avoid the 2GB PyTorch dependency on the server.
 
@@ -119,6 +123,46 @@ For a new audio file:
 4. Apply the same three-channel feature extraction as training
 5. Scale features using the saved StandardScaler
 6. Run inference and return the top 5 predictions with confidence scores
+
+#### TDMS candidate pipeline (Phase 6-9, not deployed)
+
+**Evaluation Harness (src/eval_harness.py)**
+
+A single shared evaluation utility used by every Phase 6+ experiment. Exposes three primitives:
+- `recording_level_cv()`: stratified k-fold CV at the recording level with multi-seed averaging, top-k accuracy, and confusion matrices.
+- `recording_aware_split()`: clip-level split that guarantees no recording_id leaks across train/test.
+- `recording_vote_accuracy()`: aggregates per-clip softmax into per-recording predictions, mirroring what the deployed API does at inference.
+
+Every model from v1 forward is graded against this one ruler so numbers are directly comparable.
+
+**TDMS Feature Extraction (src/build_tdms.py, src/extract_tdms_features.py)**
+
+The TDMS feature is a 120 × 120 joint distribution of (pitch-class at time `t`, pitch-class at time `t + τ`) built from the tonic-normalized predominant-pitch contour. Unlike v1's three concatenated 1D pitch histograms, it preserves phrase order — which note follows which note — so allied ragas that share swaras but differ in gait project to different TDMSs. Hyperparameters match Gulati et al. (ISMIR 2016) exactly: η=120 bins, τ=0.3s delay, α=0.75 power compression, σ=2 bins circular Gaussian smoothing, L1 normalization. `extract_tdms_features.py` walks all 480 CompMusic recordings and saves `X_tdms.npy` (480 × 14400). Total extraction time: 40 seconds.
+
+**TDMS Audio Extraction (src/build_tdms_from_audio.py)**
+
+The deployable variant. Takes a raw audio file, runs the same pyin + tonic detection pipeline that lives in predict.py, and produces a TDMS from the resulting contour. Shares one pitch extraction pass with v1's 360-D feature pipeline so A/B benchmarks compare apples to apples.
+
+**TDMS Training and Eval (src/train_tdms.py)**
+
+Evaluates five variants under the harness: k-NN with three distances (Frobenius, symmetric KL, Bhattacharyya), an MLP on flat TDMS, and an MLP on TDMS + 360-D concat. The symmetric-KL k-NN with leave-one-out CV hits 86.67% top-1 — exactly matching the paper. Under 5-fold CV (apples-to-apples with v1), it lands at 85.67% top-1 / 97.58% top-5.
+
+**Audio-pipeline A/B (src/eval_audio_ab.py, src/eval_audio_expert_tonic.py, src/eval_crepe_audio.py)**
+
+Three benchmarks isolating the gap between expert-feature TDMS (85.67%) and audio-derived TDMS:
+- `eval_audio_ab.py`: pyin + heuristic tonic (the deployable today) → 37.36% top-1.
+- `eval_audio_expert_tonic.py`: pyin + expert tonic → 45.81% top-1. Isolates tonic-detection contribution.
+- `eval_crepe_audio.py`: CREPE + expert tonic → 51.51% top-1, 87.36% top-5. Isolates pitch-extractor contribution.
+
+All three use the same 60s middle window, same TDMS algorithm, same 5-fold CV. Full bottleneck attribution is documented in the Phase 9 section below.
+
+**Honest Baseline (src/baseline_v1_cv.py)**
+
+Re-runs the v1 training recipe under the same harness (5-fold CV with 5 seeds) to produce the honest 71.79% number used as the baseline for every comparison.
+
+**Tonic Detector (src/train_tonic_detector.py, src/extract_tonic_candidates.py)**
+
+A learned re-ranker that scores the heuristic tonic detector's top-5 candidates and reorders them. Trained but not yet wired into `api/main.py`. Adds about +2.1 pp to tonic accuracy on the held-out set, which Phase 9a estimates is worth about +5-8 pp on raga top-1 in the deployable audio path.
 
 ### Backend API (FastAPI, Railway)
 
@@ -359,7 +403,7 @@ All five feature scales finished extracting. The combined dataset (`src/build_mu
 
 That is below the v1 production baseline of 84.4% on full-recording features. Per-scale and per-source breakdowns showed the same shape as v2: longer windows beat shorter windows by a wide margin, and per-clip accuracy at the 15-second scale could not climb out of the 30s. The multi-scale hypothesis (that seeing the same raga at 15s, 30s, 1min, 3min, and full-recording would teach scale-invariance) did not hold in practice. The model still learned a window-shaped decision boundary that did not generalize to held-out recordings.
 
-The structural read is that pitch-class histograms throw away phrase order. A raga is partially defined by the sequence in which characteristic phrases appear (the pakad), and a histogram is a bag of pitches with no time information at all. Two ragas that share a swara set but differ in the canonical phrase order project to nearly identical pitch class distributions, so a histogram-based classifier cannot distinguish them no matter how much data it sees. v3 is not deployed. The 84.4% v1 model continues to serve traffic at raga-identifier-production.up.railway.app.
+The structural read is that pitch-class histograms throw away phrase order. A raga is partially defined by the sequence in which characteristic phrases appear (the pakad), and a histogram is a bag of pitches with no time information at all. Two ragas that share a swara set but differ in the canonical phrase order project to nearly identical pitch class distributions, so a histogram-based classifier cannot distinguish them no matter how much data it sees. v3 is not deployed. The v1 model continues to serve traffic at raga-identifier-production.up.railway.app, though Phase 6 later showed v1's honest accuracy on a fair evaluation is 71.79%, not the 84.4% from the leaky split, and Phase 8 showed v1's actual audio-pipeline accuracy is closer to 8%. The phrase-order failure mode this paragraph names is what TDMS in Phase 7 was built to fix.
 
 ---
 
@@ -435,15 +479,15 @@ So the real lift is +2.1 percentage points, not +31.2. The model captures about 
 
 The training run did show one healthy signal: the train/test gap was 85.2% vs 78.1% in the buggy run, and roughly 7 points in the corrected run, which is the right shape for a model that is learning a real pattern rather than memorizing. Compare with v4 and v5, both of which hit 86% to 96% train accuracy with chance-level validation. The tonic detector is the right size for the data: too small to memorize 384 recordings, big enough to learn what a real raga PCD looks like under a candidate Sa.
 
-The learned tonic detector is not yet wired into the production inference path. The integration plan is to load `raga_tonic_detector.pkl` alongside the existing model and scaler in `api/main.py`, replace the heuristic argmax inside `_detect_tonic` with a forward pass of the re-ranker over the five candidates, and re-measure raga accuracy end to end. Expected lift on the live system is modest given the +2.1 pp tonic improvement, but the larger value is the diagnostic: it pins down where the actual bottleneck is.
+The learned tonic detector is not yet wired into the production inference path. The integration plan is to load `models/tonic_detector_v1.pt` alongside the existing model and scaler in `api/main.py`, replace the heuristic argmax inside `_detect_tonic` with a forward pass of the re-ranker over the five candidates, and re-measure raga accuracy end to end. Expected lift on the live system is modest given the +2.1 pp tonic improvement, but the larger value is the diagnostic: it pins down where the actual bottleneck is.
 
 ---
 
 ## Phase 6: An Honest Re-baseline of v1
 
-Months after v1 shipped, I went back and built a real evaluation harness. The 84.4% number that lives in the README header came from a single random 80/20 split of 689 mixed CompMusic+YouTube samples. Because the split didn't enforce recording-aware boundaries, the same recording's training and testing data could legally end up on opposite sides of the split. With a recording-aware 5-fold stratified CV protocol — the same protocol every published baseline in the field uses — the same v1 recipe lands at **71.79% ± 0.84% top-1 / 94.25% ± 0.21% top-5** on the CompMusic 480-recording set.
+Months after v1 shipped, I went back and built a real evaluation harness. The 84.4% number that was originally reported in this README came from a single random 80/20 split of 689 mixed CompMusic+YouTube samples. Because the split didn't enforce recording-aware boundaries, the same recording's training and testing data could legally end up on opposite sides of the split. With a recording-aware 5-fold stratified CV protocol — the same protocol every published baseline in the field uses — the same v1 recipe lands at **71.79% ± 0.84% top-1 / 94.25% ± 0.21% top-5** on the CompMusic 480-recording set.
 
-That gap (84.4 → 71.79) is the "leaky-split tax." I'm leaving the 84.4% in the table above because it's what was originally reported, but the 71.79% is what v1 actually delivers on a fair evaluation, and everything that follows uses this as the honest baseline.
+That gap (84.4 → 71.79) is the "leaky-split tax." I'm leaving the 84.4% in the "Five Model Attempts" table above because it's what was originally reported, but the 71.79% is what v1 actually delivers on a fair evaluation, and everything that follows uses this as the honest baseline.
 
 The eval harness lives at `backend/src/eval_harness.py` and exposes three primitives: recording-level stratified k-fold CV, recording-aware splits (with no clip leakage across train/test), and clip-to-recording vote aggregation that mirrors what the deployed API does at inference. Every experiment from Phase 6 onward gets graded against this single ruler. The script that produced the 71.79% number is `backend/src/baseline_v1_cv.py`.
 
@@ -528,7 +572,7 @@ Result: **45.81% ± 1.55% top-1, 82.93% ± 0.32% top-5.**
 
 So the tonic alone accounts for **+8.45 pp top-1** and **+15.02 pp top-5**. That's a meaningful contribution but it is not the dominant bottleneck. The remaining gap to the 86.67% ceiling is ~40 pp, of which only about a quarter is tonic. The top-5 number is striking, though — at 82.93%, the audio pipeline with a correct tonic puts the right raga in the top 5 most of the time. It's the top-1 disambiguation that fails.
 
-This validates wiring the existing `tonic_detector_v1.pt` re-ranker (+2.1 pp from Phase 5b) into production — it's the cheapest deployable improvement — but it also says that tonic detection is not the principal failure mode.
+This validates wiring the existing `tonic_detector_v1.pt` re-ranker (+2.1 pp from the Tonic Detector section above) into production — it's the cheapest deployable improvement — but it also says that tonic detection is not the principal failure mode.
 
 ### Phase 9b — CREPE pitch + EXPERT tonic
 
@@ -609,7 +653,7 @@ Every time someone uses the app and submits feedback, the following data is stor
 
 When enough feedback accumulates (target: 50+ corrections per raga), I plan to download the corrected audio files, extract features from them, add them to the training set, and retrain the model. This creates a loop where real-world usage directly improves the model over time.
 
-The original 84.4% model is backed up on Hugging Face as raga_sklearn_v1_84pct.pkl so I can always revert if a retrained version performs worse.
+The original v1 sklearn model is archived on Hugging Face as `raga_sklearn_v1_84pct.pkl` (the filename reflects the original leaky-split number, not the honest 71.79% from Phase 6) so any retrained model can be A/B'd against it and reverted if it regresses. The current production endpoint also still loads the same v1 pickle — none of the Phase 6-9 work has been deployed yet.
 
 ---
 
@@ -661,15 +705,21 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 
 | Layer | Technology |
 |---|---|
-| Audio processing | librosa, scipy, yt-dlp |
-| Model training | PyTorch |
-| Model inference (deployed) | scikit-learn MLPClassifier |
-| Backend API | FastAPI, Python 3.11 |
-| Backend hosting | Railway |
+| Audio loading and signal processing | librosa, scipy, yt-dlp, ffmpeg, libsndfile |
+| Pitch extraction (deployed) | librosa.pyin |
+| Pitch extraction (Phase 9b candidate) | crepe (CNN-based, TensorFlow) |
+| Feature engineering (deployed) | three-channel 360-D pitch class distribution |
+| Feature engineering (Phase 7 candidate) | TDMS 120 × 120 joint distribution + scipy.ndimage Gaussian smoothing |
+| Model training | PyTorch (research), scikit-learn MLPClassifier (deployment) |
+| Model inference (deployed) | scikit-learn MLPClassifier on 360-D features |
+| Model inference (Phase 7 candidate) | 1-NN with symmetric-KL distance over 480 TDMS templates |
+| Evaluation | scikit-learn StratifiedKFold (recording-aware), custom `eval_harness.py` |
+| Backend API | FastAPI, Python 3.11, uvicorn |
+| Backend hosting | Railway (Hobby tier, Docker) |
 | Model storage | Hugging Face Hub |
-| Database and file storage | Supabase |
-| Frontend | React, Vite |
-| Frontend hosting | Vercel |
+| Database and file storage | Supabase (Postgres + Storage) |
+| Frontend | React 19, Vite 8, Framer Motion, WaveSurfer.js |
+| Frontend hosting | Vercel (Hobby tier) |
 | Version control | GitHub |
 
 ---
@@ -680,44 +730,84 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 raga-identifier/
 ├── backend/
 │   ├── api/
-│   │   └── main.py                        FastAPI app
+│   │   └── main.py                          FastAPI app (deployed)
 │   ├── src/
-│   │   ├── preprocess.py                  Feature extraction from CompMusic pitch files
-│   │   ├── preprocess_audio_clips.py      Clip slicing pipeline for raw audio
-│   │   ├── preprocess_melspec.py          Log-Mel spectrogram precompute (v4)
-│   │   ├── preprocess_ast_embeddings.py   AST CLS embedding extraction (v5)
-│   │   ├── build_multiscale_dataset.py    Combine scale-specific X arrays into X_multiscale
-│   │   ├── combine_datasets.py            Stitch CompMusic + YouTube feature arrays
-│   │   ├── extract_tonic_candidates.py    Generate top-5 tonic candidates per recording
-│   │   ├── train.py                       v1 deployed model training (PyTorch + sklearn)
-│   │   ├── train_v2.py                    v2 per-clip training (failed)
-│   │   ├── train_v3.py                    v3 multi-scale training (53.62% per-recording vote)
-│   │   ├── train_v4.py                    v4 Mel-spec CNN (failed)
-│   │   ├── train_v5_ast.py                v5 AST embedding classifier (failed)
-│   │   ├── train_tonic_detector.py        Learned re-ranker for tonic candidates
-│   │   ├── predict.py                     Inference for live audio
-│   │   ├── download_youtube_data.py       YouTube data collection
-│   │   ├── gate1_report.py                Cross-dataset feature alignment diagnostic
-│   │   ├── verify_tonic_detection.py      Diagnostic: auto-tonic vs expert on 5 recordings
-│   │   └── verify_clip_features.py        Pre-flight check for clip feature quality
+│   │   │
+│   │   │  --- v1 deployed pipeline ---
+│   │   ├── preprocess.py                    360-D PCD feature from CompMusic .pitch files
+│   │   ├── preprocess_audio_clips.py        Slice raw audio into 30s clips, compute PCD features
+│   │   ├── train.py                         v1 training (PyTorch + sklearn copy for deployment)
+│   │   ├── predict.py                       v1 inference (pyin + heuristic tonic + 360-D PCD)
+│   │   ├── combine_datasets.py              Merge CompMusic + YouTube feature arrays
+│   │   ├── download_youtube_data.py         YouTube data collection via yt-dlp
+│   │   │
+│   │   │  --- failed/abandoned experiments (v2-v5) ---
+│   │   ├── train_v2.py                      v2 per-clip MLP (36.77% per-clip)
+│   │   ├── train_v3.py                      v3 multi-scale MLP (53.62% per-recording vote)
+│   │   ├── train_v4.py                      v4 Mel-spec CNN (11.46% — failed)
+│   │   ├── train_v5_ast.py                  v5 AST embedding head (3.12% — chance)
+│   │   ├── preprocess_melspec.py            Mel spectrogram precompute (v4)
+│   │   ├── preprocess_ast_embeddings.py     AST CLS embedding extraction (v5)
+│   │   ├── build_multiscale_dataset.py      Combine 15s/30s/1min/3min/full into X_multiscale
+│   │   ├── gate1_report.py                  Cross-dataset feature alignment diagnostic (v2 era)
+│   │   ├── verify_clip_features.py          Pre-flight check for clip feature quality (v2 era)
+│   │   │
+│   │   │  --- tonic detector (Tonic Detector section, not deployed) ---
+│   │   ├── extract_tonic_candidates.py      Generate top-5 tonic candidates per recording
+│   │   ├── train_tonic_detector.py          Learned re-ranker for tonic candidates (+2.1 pp)
+│   │   ├── verify_tonic_detection.py        Auto-tonic vs expert diagnostic on 5 recordings
+│   │   │
+│   │   │  --- Phase 6: honest baseline + shared eval harness ---
+│   │   ├── eval_harness.py                  Recording-aware k-fold CV, vote aggregation
+│   │   ├── baseline_v1_cv.py                v1 honest re-baseline → 71.79% top-1
+│   │   │
+│   │   │  --- Phase 7: TDMS feature, expert pitch ---
+│   │   ├── build_tdms.py                    TDMS extractor (Gulati 2016) + three distance fns
+│   │   ├── extract_tdms_features.py         Walk 480 CompMusic recordings → X_tdms.npy
+│   │   ├── train_tdms.py                    kNN + MLP variants → 86.67% LOO match
+│   │   │
+│   │   │  --- Phase 8 + 9: TDMS audio pipeline benchmarks ---
+│   │   ├── build_tdms_from_audio.py         Pyin + tonic detection → TDMS, runtime variant
+│   │   ├── eval_audio_ab.py                 v1 vs TDMS on identical audio (37.36% vs 8.32%)
+│   │   ├── eval_audio_expert_tonic.py       Pyin + expert tonic (45.81%) — Phase 9a
+│   │   └── eval_crepe_audio.py              CREPE + expert tonic (51.51%) — Phase 9b
+│   │
 │   ├── data/
-│   │   ├── X.npy                          CompMusic training features (480 samples)
-│   │   ├── X_yt.npy                       YouTube training features (209 samples)
-│   │   ├── y.npy / y_yt.npy              Training labels
-│   │   ├── classes.json                   Raga names
-│   │   └── youtube_videos.json            Video index for deduplication
+│   │   ├── X.npy / y.npy                    CompMusic v1 training features (480 × 360)
+│   │   ├── X_yt.npy / y_yt.npy              YouTube v1 training features (209 × 360)
+│   │   ├── X_tdms.npy / y_tdms.npy          Phase 7 expert templates (480 × 14400)
+│   │   ├── X_audio_clips.npy                v2 per-clip features (44,071 × 360)
+│   │   ├── X_15s.npy / X_1min.npy / ...     v3 multi-scale features (gitignored)
+│   │   ├── classes.json                     Raga names (40)
+│   │   ├── youtube_videos.json              Video index for deduplication
+│   │   ├── baseline_v1_cv_report.txt        Phase 6 artifact
+│   │   ├── train_tdms_report.txt            Phase 7 artifact
+│   │   ├── eval_audio_ab_report.txt         Phase 8 artifact
+│   │   ├── eval_audio_expert_tonic_report.txt   Phase 9a artifact
+│   │   └── eval_crepe_audio_report.txt      Phase 9b artifact
 │   ├── models/
-│   │   ├── raga_model_best.pt             PyTorch model
-│   │   ├── raga_sklearn.pkl               Deployed sklearn model
-│   │   └── scaler.pkl                     Feature scaler
-│   ├── requirements.txt                   Full local dependencies
-│   ├── requirements-deploy.txt            Slim deployment dependencies
-│   └── Dockerfile
+│   │   ├── raga_model_best.pt               v1 PyTorch
+│   │   ├── raga_sklearn.pkl                 v1 deployed sklearn (loaded at startup from HF)
+│   │   ├── scaler.pkl                       v1 feature scaler
+│   │   ├── raga_model_best_v2.pt            v2 PyTorch (not deployed)
+│   │   ├── raga_sklearn_v2.pkl / scaler_v2.pkl   v2 (not deployed)
+│   │   ├── raga_model_best_v3.pt            v3 PyTorch (not deployed)
+│   │   ├── raga_sklearn_v3.pkl / scaler_v3.pkl   v3 (not deployed)
+│   │   ├── raga_cnn_v4.pt                   v4 (failed)
+│   │   ├── raga_ast_head_v5.pt              v5 (failed)
+│   │   └── tonic_detector_v1.pt             Tonic Detector section learned tonic re-ranker (not wired)
+│   ├── requirements.txt                     Full local dependencies (includes crepe, TF)
+│   ├── requirements-deploy.txt              Slim production deps (no PyTorch, no crepe, no TF)
+│   ├── Dockerfile                           Railway build (python:3.11-slim + ffmpeg)
+│   └── .env                                 Supabase URL/key (gitignored)
 └── frontend/
     ├── src/
-    │   ├── App.jsx                        Main React component
-    │   └── ragas.json                     Raga knowledge base
+    │   ├── App.jsx                          Main React component (single-file)
+    │   ├── main.jsx                         Vite entry
+    │   └── ragas.json                       40-raga knowledge base (arohanam, avarohanam, similar)
+    ├── public/                              Static assets
     ├── index.html
+    ├── vite.config.js
     └── package.json
 ```
 
@@ -749,6 +839,8 @@ The frontend runs at http://localhost:5173 and expects the backend at http://loc
 
 ## Retraining the Model
 
+### v1 pipeline (the deployed model)
+
 ```bash
 cd backend
 source venv/bin/activate
@@ -756,14 +848,14 @@ source venv/bin/activate
 # (Optional) Collect more YouTube training data
 python src/download_youtube_data.py
 
-# Extract features from CompMusic pitch files
+# Extract features from CompMusic pitch files (produces X.npy / y.npy)
 python src/preprocess.py
 
 # (Optional) Slice raw audio recordings into 30s clips and extract features
 # Requires the CompMusic audio dataset at ~/raga-data-audio/
 python src/preprocess_audio_clips.py
 
-# Train - produces both PyTorch model and sklearn model for deployment
+# Train — produces both PyTorch model and sklearn model for deployment
 python src/train.py
 
 # Upload to Hugging Face
@@ -776,6 +868,70 @@ api.upload_file(path_or_fileobj='models/scaler.pkl', path_in_repo='scaler.pkl', 
 ```
 
 Then push to GitHub to trigger a Railway redeploy.
+
+### Honest re-baseline of v1 (Phase 6)
+
+Once `data/X.npy` and `data/classes.json` exist, the honest 71.79% top-1 number for v1 can be reproduced with:
+
+```bash
+python src/baseline_v1_cv.py        # 5-fold CV with 5 seeds, ~5 seconds
+cat data/baseline_v1_cv_report.txt
+```
+
+### TDMS pipeline (Phase 7 candidate, not deployed)
+
+```bash
+# Build the 480 TDMS templates from CompMusic expert pitch files
+# Outputs data/X_tdms.npy (480 × 14400) and data/tdms_meta.json
+python src/extract_tdms_features.py
+
+# Evaluate 5 variants under the same harness as v1
+# Headline: k-NN sym KL hits 86.67% LOO / 85.67% 5-fold
+python src/train_tdms.py
+cat data/train_tdms_report.txt
+```
+
+### Audio-pipeline benchmarks (Phase 8 + 9)
+
+Phase 8 needs `~/raga-data-audio/` (the 7.5 GB CompMusic audio dataset). All three benchmarks share the same 60s middle window per recording.
+
+```bash
+# Phase 8: v1 vs TDMS on identical audio (12 min in ProcessPoolExecutor with 6 workers)
+python src/eval_audio_ab.py --workers 6
+cat data/eval_audio_ab_report.txt
+
+# Phase 9a: pyin pitch + EXPERT tonic — isolates tonic-detection contribution (~13 min)
+python src/eval_audio_expert_tonic.py --workers 6
+cat data/eval_audio_expert_tonic_report.txt
+
+# Phase 9b: CREPE pitch + EXPERT tonic — isolates pitch-extractor contribution (~18 min)
+python src/eval_crepe_audio.py --model small
+cat data/eval_crepe_audio_report.txt
+```
+
+### Deploying TDMS to production (not done yet, but here is the recipe)
+
+These steps would replace the v1 model on the live API. They are NOT performed automatically — production cutover should only happen after Phase 10 lands the longer-window experiment and after a brief shadow-mode comparison.
+
+```bash
+# 1. Build the deployable index from AUDIO (not expert pitch — see Phase 8 cross-source results)
+# This rebuilds the 480 TDMS templates using the runtime pyin pipeline.
+python src/eval_audio_ab.py --workers 6
+# (uses the cached X_tdms_audio.npy if present; pass --skip-extract to reuse)
+
+# 2. Upload the audio templates + classes to Hugging Face Hub
+python -c "
+from huggingface_hub import HfApi
+api = HfApi()
+api.upload_file(path_or_fileobj='data/X_tdms_audio.npy', path_in_repo='X_tdms_audio.npy', repo_id='Smashgod23/raga-identifier')
+api.upload_file(path_or_fileobj='data/y_tdms.npy', path_in_repo='y_tdms_audio.npy', repo_id='Smashgod23/raga-identifier')
+"
+
+# 3. Patch api/main.py to download the index on startup, swap the inference call to
+#    src.build_tdms_from_audio.compute_tdms_from_audio() + a 1-NN with symmetric KL.
+```
+
+A clean A/B test before the cutover would route, say, 10% of requests to the new path and compare top-1 / top-5 / "did the user accept" on feedback corrections.
 
 ---
 
