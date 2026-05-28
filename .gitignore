@@ -3,6 +3,10 @@ backend/data/RagaDataset/
 backend/data/ragas/
 backend/data/*.wav
 backend/data/*.npy
+# Phase 10b production templates: ship in-repo for now until HF Hub upload lands.
+# Re-ignore them once they live on HF.
+!backend/data/X_tdms_long.npy
+!backend/data/y_tdms.npy
 backend/data/audio_clips_meta.json
 backend/data/combined_meta.json
 backend/data/15s_meta.json

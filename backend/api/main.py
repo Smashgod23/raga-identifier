@@ -17,6 +17,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from predict import extract_features_from_audio, hz_to_note_name
+from predict_tdms import TDMSIndex, predict_top_k
 
 app = FastAPI(title="Raga Identifier API")
 
@@ -46,6 +47,37 @@ with open(model_path, "rb") as f:
     MODEL = pickle.load(f)
 
 print(f"Model loaded — {len(CLASSES)} ragas")
+
+# --- Phase 10b TDMS k-NN index (research-validated 73.23% top-1, 95.31% top-5
+# under expert-tonic eval; production with heuristic tonic measured separately
+# in Phase 11a). Loaded alongside v1; new endpoint /predict-tdms serves it. The
+# 480x14400 float32 array is ~28 MB. Index optional — if neither HF nor a local
+# copy is available, /predict-tdms returns 503 and v1 endpoints keep working.
+def _load_tdms_index() -> Optional["TDMSIndex"]:
+    data_dir = os.path.join(BASE_DIR, "data")
+    local_X = os.path.join(data_dir, "X_tdms_long.npy")
+    local_y = os.path.join(data_dir, "y_tdms.npy")
+    # Prefer local if both files already exist (covers dev environments and
+    # any redeploy where HF auth is rate-limited or temporarily down).
+    if os.path.exists(local_X) and os.path.exists(local_y):
+        try:
+            X = np.load(local_X)
+            y = np.load(local_y)
+            return TDMSIndex(X, y, n_classes=len(CLASSES))
+        except Exception as exc:
+            print(f"Local TDMS files failed to load: {exc!r}. Falling back to HF.")
+    try:
+        x_path = hf_hub_download(repo_id=REPO_ID, filename="X_tdms_long.npy", local_dir=data_dir)
+        y_path = hf_hub_download(repo_id=REPO_ID, filename="y_tdms.npy", local_dir=data_dir)
+        return TDMSIndex(np.load(x_path), np.load(y_path), n_classes=len(CLASSES))
+    except Exception as exc:
+        print(f"TDMS index unavailable: {exc!r}. /predict-tdms will return 503.")
+        return None
+
+
+TDMS_INDEX = _load_tdms_index()
+if TDMS_INDEX is not None:
+    print(f"TDMS index loaded — {len(TDMS_INDEX.X)} templates")
 
 # Multi-segment threshold: videos/clips longer than this get sampled in three
 # 90s windows and averaged, matching how the YouTube pipeline already works.
@@ -161,6 +193,37 @@ async def predict_raga(
     override = tonic_hz if tonic_hz and tonic_hz > 0 else None
     try:
         probs, used_tonic = _predict_multi_segment(tmp_path, tonic_override=override)
+        return _format_response(probs, used_tonic, tonic_overridden=override is not None)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    finally:
+        os.unlink(tmp_path)
+
+
+@app.post("/predict-tdms")
+async def predict_raga_tdms(
+    file: UploadFile = File(...),
+    tonic_hz: Optional[float] = Form(None),
+):
+    """Phase 10b TDMS k-NN inference. Three-window-averaged TDMS query
+    against a 480-template index. Slower than /predict (3x pyin passes)
+    but research-validated at 73.23% top-1 / 95.31% top-5 vs v1's 8.32% /
+    28.57% on the same evaluation."""
+    if TDMS_INDEX is None:
+        raise HTTPException(503, "TDMS index not loaded")
+
+    allowed = {".wav", ".mp3", ".m4a", ".webm", ".ogg"}
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in allowed:
+        raise HTTPException(400, f"Unsupported format: {ext}. Use {allowed}")
+
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    override = tonic_hz if tonic_hz and tonic_hz > 0 else None
+    try:
+        probs, used_tonic = predict_top_k(TDMS_INDEX, tmp_path, tonic_override=override)
         return _format_response(probs, used_tonic, tonic_overridden=override is not None)
     except ValueError as e:
         raise HTTPException(422, str(e))
