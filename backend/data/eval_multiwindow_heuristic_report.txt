@@ -1,0 +1,15 @@
+==============================================================================
+Phase 11a: production-faithful eval
+Templates: 5-min pyin + EXPERT tonic     Queries: 3 x 60s avg, pyin + HEURISTIC tonic
+Recordings: 480/480
+==============================================================================
+
+  Phase 11a (heuristic tonic on queries)  top1 35.83% +/- 0.81   top5 63.67% +/- 0.60
+
+Comparison ladder:
+  Phase 10b  pyin + EXPERT    tonic, 5min + 3x60s avg   top1 73.23%   top5 95.31%
+  Phase 11a  pyin + heuristic tonic, 5min + 3x60s avg   top1 35.83%   top5 63.67%
+  Phase 8    pyin + heuristic tonic, 60s + 60s            top1 37.36%   top5 67.91%
+  v1 deployed                                              top1  8.32%   top5 28.57%
+
+Phase 11a is the number production will actually serve.

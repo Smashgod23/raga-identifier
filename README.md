@@ -164,9 +164,9 @@ Re-runs the v1 training recipe under the same harness (5-fold CV with 5 seeds) t
 
 A learned re-ranker that scores the heuristic tonic detector's top-5 candidates and reorders them. Trained but not yet wired into `api/main.py`. Adds about +2.1 pp to tonic accuracy on the held-out set, which Phase 9a estimates is worth about +5-8 pp on raga top-1 in the deployable audio path.
 
-### Backend API (FastAPI, Railway)
+### Backend API (FastAPI, Hugging Face Spaces)
 
-The backend is a FastAPI application deployed on Railway at raga-identifier-production.up.railway.app, built from `backend/Dockerfile` (python:3.11-slim + ffmpeg + libsndfile1).
+The backend is a FastAPI application deployed on Hugging Face Spaces at smashgod23-raga-identifier-api.hf.space, built from `backend/Dockerfile` (python:3.11-slim + ffmpeg + libsndfile1). I originally shipped on Railway's free trial, then moved to HF Spaces when the trial ended; the Dockerfile is unchanged between them.
 
 On startup it downloads the model, scaler, and class list from Hugging Face Hub (Smashgod23/raga-identifier) to avoid storing large files in the git repository.
 
@@ -177,7 +177,7 @@ Endpoints:
 - POST /predict-youtube: accepts a YouTube URL, downloads audio using yt-dlp. For videos longer than 3 minutes, it samples 3 segments from different parts of the video (at 25%, 50%, and 75% through) and averages the predictions, which avoids tuning sections and intros that would throw off the model. Returns top 5 predictions.
 - POST /feedback: accepts user feedback (predicted raga, actual raga, correctness, confidence, audio filename) and stores it in the Supabase feedback table
 
-The backend uses Supabase for storage and the feedback database. Environment variables SUPABASE_URL and SUPABASE_KEY are set in the Railway service configuration.
+The backend uses Supabase for storage and the feedback database. Environment variables SUPABASE_URL and SUPABASE_KEY are set as Hugging Face Spaces secrets.
 
 ### Frontend (React + Vite, Vercel)
 
@@ -196,7 +196,7 @@ Features:
 ### Infrastructure
 
 - Model storage: Hugging Face Hub (free tier)
-- Backend hosting: Railway (Hobby tier)
+- Backend hosting: Hugging Face Spaces (free tier, Docker SDK)
 - Frontend hosting: Vercel (free tier)
 - Database and file storage: Supabase (free tier)
 - Version control: GitHub
@@ -231,7 +231,7 @@ During development of the audio clip pipeline, I initially used the filename (ba
 
 **PyTorch deployment size**
 
-Railway's free tier has a 4GB Docker image limit and PyTorch alone is over 2GB. I solved this by converting the trained PyTorch model to a scikit-learn MLPClassifier, which has equivalent inference behavior but requires only scikit-learn as a dependency, keeping the Docker image under 1GB.
+Railway's free tier (which I originally shipped on) had a 4GB Docker image limit and PyTorch alone is over 2GB. I solved this by converting the trained PyTorch model to a scikit-learn MLPClassifier, which has equivalent inference behavior but requires only scikit-learn as a dependency, keeping the Docker image under 1GB. After the Railway trial ended I moved to Hugging Face Spaces (free tier, Docker SDK) where the same slim-image constraint still applies and the same scikit-learn deployment artifact works unchanged.
 
 **sklearn and numpy version mismatches**
 
@@ -403,7 +403,7 @@ All five feature scales finished extracting. The combined dataset (`src/build_mu
 
 That is below the v1 production baseline of 84.4% on full-recording features. Per-scale and per-source breakdowns showed the same shape as v2: longer windows beat shorter windows by a wide margin, and per-clip accuracy at the 15-second scale could not climb out of the 30s. The multi-scale hypothesis (that seeing the same raga at 15s, 30s, 1min, 3min, and full-recording would teach scale-invariance) did not hold in practice. The model still learned a window-shaped decision boundary that did not generalize to held-out recordings.
 
-The structural read is that pitch-class histograms throw away phrase order. A raga is partially defined by the sequence in which characteristic phrases appear (the pakad), and a histogram is a bag of pitches with no time information at all. Two ragas that share a swara set but differ in the canonical phrase order project to nearly identical pitch class distributions, so a histogram-based classifier cannot distinguish them no matter how much data it sees. v3 is not deployed. The v1 model continues to serve traffic at raga-identifier-production.up.railway.app, though Phase 6 later showed v1's honest accuracy on a fair evaluation is 71.79%, not the 84.4% from the leaky split, and Phase 8 showed v1's actual audio-pipeline accuracy is closer to 8%. The phrase-order failure mode this paragraph names is what TDMS in Phase 7 was built to fix.
+The structural read is that pitch-class histograms throw away phrase order. A raga is partially defined by the sequence in which characteristic phrases appear (the pakad), and a histogram is a bag of pitches with no time information at all. Two ragas that share a swara set but differ in the canonical phrase order project to nearly identical pitch class distributions, so a histogram-based classifier cannot distinguish them no matter how much data it sees. v3 is not deployed. The v1 model continues to serve traffic at smashgod23-raga-identifier-api.hf.space, though Phase 6 later showed v1's honest accuracy on a fair evaluation is 71.79%, not the 84.4% from the leaky split, and Phase 8 showed v1's actual audio-pipeline accuracy is closer to 8%. The phrase-order failure mode this paragraph names is what TDMS in Phase 7 was built to fix.
 
 ---
 
@@ -657,15 +657,62 @@ What this means for shipping: a deployable pipeline now sits at **9× v1's actua
 
 The gap to the 85.67% Phase 1 ceiling — about 12 pp top-1 — is now plausibly closable in a few more steps: CREPE on the templates (templates are built offline so CREPE's slowness doesn't hurt at inference), wiring the existing tonic detector to replace the heuristic, and possibly extending templates beyond 5 minutes toward the full recording length.
 
-### What's left after Phase 10b
+### Phase 11a — Production-faithful eval (heuristic tonic)
 
-Open levers, in expected-value order:
+Phase 10b used the expert tonic from `.tonicFine` on both sides of the eval. Real user audio doesn't have those annotations — the production endpoint has to run the heuristic tonic detector from `predict.py._detect_tonic`. To get the number production will actually serve, `backend/src/eval_multiwindow_heuristic.py` keeps everything from Phase 10b but swaps the query-side tonic for the heuristic.
 
-1. **Deploy the Phase 10b recipe.** Long templates + 3-window-averaged queries + pyin + heuristic tonic should land at roughly 65-68% top-1 / ~92% top-5 in production (subtracting ~5-8 pp for the heuristic-tonic substitution Phase 10b's evaluation doesn't model). That's 8× v1's actual deployed top-1 and 3× its top-5. The "did you mean? here are five" UX would be effectively solved. Work: ~1-2 days to wire `models/tonic_detector_v1.pt`, swap `predict.py`'s feature extraction to TDMS, ship the X_tdms_long.npy index to Hugging Face Hub, and update `api/main.py` to do multi-window extraction + 1-NN sym-KL lookup.
-2. **CREPE on the long templates.** Phase 9b said CREPE buys +5.7 pp top-1 on 60s windows. Templates are built offline so CREPE's slowness doesn't hurt at inference. Expected lift on top of Phase 10b: probably +3-6 pp top-1 if the effects stack.
-3. **Wire the tonic detector** (`models/tonic_detector_v1.pt`). Worth +2.1 pp on tonic accuracy → ~+5-8 pp on raga top-1 from Phase 9a's accounting. Cheap to integrate.
-4. **Full-recording templates instead of 5 min.** Beyond Phase 10b's 5-minute templates, extending toward the full ~30-minute recording probably picks up another 2-4 pp top-1 as the template distribution gets denser. Linear extension of the Phase 10a result.
-5. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** ISMIR 2019 reports 88.1% on this dataset. The move if Phase 10b + CREPE + tonic detector still leaves us short of the 85% ceiling.
+Result: **35.83% ± 0.81% top-1, 63.67% ± 0.60% top-5.**
+
+This is sobering. The heuristic tonic destroys almost all the gains from longer templates and multi-window aggregation. Phase 8 (60s + 60s + heuristic tonic) landed at 37.36% / 67.91% — slightly higher than Phase 11a on top-1 because the noise-from-tonic-errors swamps the noise-reduction-from-multi-window-averaging at this tonic accuracy.
+
+The takeaway: **the tonic detector is the dominant bottleneck in the audio pipeline**, not pitch quality or window length. The expert tonic was doing the heavy lifting in Phase 10b's 73.23%. Phase 11a is the actual production accuracy for the just-shipped `/predict-tdms` endpoint until the tonic story is fixed.
+
+| Step | Pitch | Tonic | Template | Query | Top-1 | Top-5 |
+|---|---|---|---|---|---|---|
+| Phase 1 ceiling | expert | expert | full rec | (same) | 85.67% | 97.58% |
+| Phase 10b | pyin | expert | 5 min | 3 × 60s avg | 73.23% | 95.31% |
+| Phase 10a | pyin | expert | 5 min | 60s | 55.10% | 88.74% |
+| Phase 9b | CREPE | expert | 60s | 60s | 51.51% | 87.36% |
+| Phase 9a | pyin | expert | 60s | 60s | 45.81% | 82.93% |
+| Phase 8 | pyin | heuristic | 60s | 60s | 37.36% | 67.91% |
+| **Phase 11a (production)** | **pyin** | **heuristic** | **5 min** | **3 × 60s avg** | **35.83%** | **63.67%** |
+| v1 deployed | pyin | heuristic | 60s (PCD) | 60s | 8.32% | 28.57% |
+
+Phase 11a is still **4.3× v1's actual deployed top-1 and 2.2× its top-5**, but nowhere near the 73% we hoped for. The just-shipped `/predict-tdms` endpoint is serving the Phase 11a recipe and should land at ~36% top-1 for real users.
+
+### Phase 11b — Does the learned tonic re-ranker help end-to-end?
+
+Phase 11a flagged tonic as the dominant bottleneck. The Tonic Detector section above documents an existing `tonic_detector_v1.pt` re-ranker trained months earlier — +2.1 pp on tonic accuracy on its own training/test split. Phase 11b plugs that re-ranker into the production multi-window pipeline (`backend/src/eval_multiwindow_reranker.py`) and re-measures end-to-end.
+
+Result: **34.08% ± 0.39% top-1, 61.25% ± 0.37% top-5.**
+
+A regression of **−1.75 pp top-1 and −2.42 pp top-5** vs Phase 11a. The training-time lift does not transfer.
+
+The reason traces back to a sampling-offset mismatch. The re-ranker was trained on candidates extracted from the first 60 seconds of each recording (offset=10s, skipping the tanpura intro). Phase 11b queries from three 60s windows at 25/50/75% through the recording. The candidates the re-ranker scores at production time look statistically different from the ones it was trained on, and the +2.1 pp lift it picked up on the original test set does not survive the distribution shift.
+
+So the re-ranker as it exists today is shelved. Wiring it would actively make things worse. If we want it back, the right fix is to re-extract candidates at the production-equivalent offsets, retrain, and re-evaluate.
+
+| Step | Pitch | Tonic | Template | Query | Top-1 | Top-5 |
+|---|---|---|---|---|---|---|
+| Phase 1 ceiling | expert | expert | full rec | (same) | 85.67% | 97.58% |
+| Phase 10b | pyin | expert | 5 min | 3 × 60s avg | 73.23% | 95.31% |
+| **Phase 11a (production)** | **pyin** | **heuristic** | **5 min** | **3 × 60s avg** | **35.83%** | **63.67%** |
+| Phase 11b | pyin | re-ranker | 5 min | 3 × 60s avg | 34.08% | 61.25% |
+| Phase 8 | pyin | heuristic | 60s | 60s | 37.36% | 67.91% |
+| v1 deployed | pyin | heuristic | 60s (PCD) | 60s | 8.32% | 28.57% |
+
+The next priority is the **bidirectional octave fold** in candidate generation. The tonic detector report's "perfect re-ranker ceiling" of 60.4% says the correct tonic is only in the top-5 candidates ~60% of the time, because the upward-only octave fold drops candidates an octave below the actual tonic for some recordings. Fixing the fold raises that ceiling and changes which candidates the re-ranker (or the heuristic) gets to choose from.
+
+### What's left after Phase 11b
+
+Phase 11a + 11b together confirm tonic detection is the dominant bottleneck AND that the existing re-ranker as trained doesn't help — the training distribution doesn't match the production query offset. Open levers in expected-value order:
+
+1. **Bidirectional octave fold in candidate generation.** The tonic detector report's perfect-re-ranker ceiling is only 60.4% because the upward-only fold drops candidates an octave low for some recordings. Rewriting the fold to be bidirectional raises that ceiling. Cheapest deployable lift, ~half a day in `predict.py._detect_tonic`.
+2. **Retrain the tonic re-ranker on production-offset candidates.** Phase 11b showed the existing re-ranker regresses because it saw offset=10s candidates at training time and offset=60s at inference. Re-running `extract_tonic_candidates.py` at production-equivalent offsets and retraining the MLP would, in principle, recover the +2 pp lift. Maybe a day of work plus eval.
+3. **Move tonic detection out of the per-window loop.** Currently each of the three 60s query windows runs `_detect_tonic` independently. The three estimates may disagree by an octave, in which case the averaged TDMS is the wrong feature. Pin the tonic from the first successful window (or vote across the three). Cheap experiment.
+4. **CREPE on the long templates.** Phase 9b said CREPE buys +5.7 pp top-1 vs pyin on 60s windows with expert tonic. CREPE may also be more robust to noisy pitch under bad tonic estimates. Templates are built offline so CREPE's slowness doesn't hurt at inference.
+5. **Full-recording templates instead of 5 min.** Linear extension of the Phase 10a result — probably +2-4 pp top-1 as the template distribution gets denser.
+6. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** ISMIR 2019 reports 88.1% on this dataset. The move if the above levers still leave the audio pipeline short of the 85% ceiling.
 
 What's explicitly NOT a good lever based on Phase 4-8 evidence: bigger from-scratch CNNs, general-audio foundation model embeddings, or data augmentation on the existing 689 recordings. Those have all been tried and failed for principled reasons documented above.
 
@@ -693,7 +740,9 @@ The honest accuracy story, ordered from the most generous evaluation protocol to
 | TDMS k-NN sym KL (CREPE + expert tonic, 60s clip) | 51.51% | 87.36% |
 | TDMS k-NN sym KL (pyin + expert tonic, 60s clip) | 45.81% | 82.93% |
 | TDMS k-NN sym KL (pyin + heuristic tonic, 60s clip) | 37.36% | 67.91% |
-| v1 deployed pipeline (pyin + heuristic tonic, 60s clip) | 8.32% | 28.57% |
+| **TDMS k-NN sym KL (pyin + heuristic tonic, 5-min template + 3 × 60s averaged query — `/predict-tdms` production)** | **35.83%** | **63.67%** |
+| TDMS k-NN sym KL (pyin + re-ranker tonic, 5-min template + 3 × 60s averaged query — Phase 11b: regression) | 34.08% | 61.25% |
+| v1 deployed pipeline (pyin + heuristic tonic, 60s clip — `/predict`) | 8.32% | 28.57% |
 
 The model performs best on ragas with very distinctive swara sets. On real recordings, Todi came in at 97.9% confidence, Kalyani at 97.3%, and Shankarabharanam at 97.6% (from the middle of an MS Subbulakshmi recording) — though those confidence numbers come from the model that's actually only ~8% accurate on top-1 in benchmark, so they should be read as "what the model thinks" rather than "how often the model is right." The hardest cases at the research-evaluation level (expert features) are pentatonic ragas that share many swaras, like Mohanam and Bilahari, where the difference lies in specific ornamental patterns rather than the swara set alone. At the deployment level (pyin features), basically every prediction is hard.
 
@@ -772,7 +821,7 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 | Model inference (Phase 7 candidate) | 1-NN with symmetric-KL distance over 480 TDMS templates |
 | Evaluation | scikit-learn StratifiedKFold (recording-aware), custom `eval_harness.py` |
 | Backend API | FastAPI, Python 3.11, uvicorn |
-| Backend hosting | Railway (Hobby tier, Docker) |
+| Backend hosting | Hugging Face Spaces (free tier, Docker SDK) |
 | Model storage | Hugging Face Hub |
 | Database and file storage | Supabase (Postgres + Storage) |
 | Frontend | React 19, Vite 8, Framer Motion, WaveSurfer.js |
@@ -855,7 +904,7 @@ raga-identifier/
 │   │   └── tonic_detector_v1.pt             Tonic Detector section learned tonic re-ranker (not wired)
 │   ├── requirements.txt                     Full local dependencies (includes crepe, TF)
 │   ├── requirements-deploy.txt              Slim production deps (no PyTorch, no crepe, no TF)
-│   ├── Dockerfile                           Railway build (python:3.11-slim + ffmpeg)
+│   ├── Dockerfile                           HF Spaces build (python:3.11-slim + ffmpeg)
 │   └── .env                                 Supabase URL/key (gitignored)
 └── frontend/
     ├── src/
@@ -924,7 +973,7 @@ api.upload_file(path_or_fileobj='models/scaler.pkl', path_in_repo='scaler.pkl', 
 "
 ```
 
-Then push to GitHub to trigger a Railway redeploy.
+Then push to GitHub to trigger a Hugging Face Spaces redeploy.
 
 ### Honest re-baseline of v1 (Phase 6)
 
