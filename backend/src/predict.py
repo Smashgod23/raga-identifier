@@ -17,10 +17,29 @@ def hz_to_note_name(hz):
     return f'{note}{octave} ({cents:+d}¢)' if abs(cents) >= 3 else f'{note}{octave}'
 
 
-def _detect_tonic(voiced):
-    """Pick Sa from voiced pitches. Candidates come from a folded-Hz histogram;
-    the winner is whichever produces the most concentrated cents-mod-1200
-    distribution (Krumhansl-style L2 peakedness)."""
+def _detect_tonic(voiced, k=10, scorer="sa_pa"):
+    """Pick Sa from voiced pitches.
+
+    Candidates are the top-K peaks of a smoothed folded-Hz histogram.
+    The winner is the candidate that best satisfies the chosen scorer:
+
+      scorer="sa_pa"  (default) — the tanpura drones Sa and its fifth Pa
+        continuously, so the true Sa uniquely has strong energy at BOTH
+        0 cents and +700 cents in its tonic-relative pitch-class
+        distribution. Scoring on that drone signature beats the old
+        peakedness metric by ~13 pp tonic top-1 at K=10 (Phase 12b
+        diagnostic), with no model and no retraining.
+
+      scorer="peakedness" — legacy: most concentrated cents-mod-1200
+        distribution (Krumhansl-style L2). Kept for comparison/eval.
+
+    K defaults to 10: Phase 12 showed the correct Sa is in the top-10
+    histogram peaks 83.5% of the time vs only 62.7% for top-5, and the
+    sa_pa scorer can actually exploit the larger pool (peakedness could
+    not). Octave choice is irrelevant downstream — the TDMS/PCD feature
+    is octave-folded — so candidates are folded up to the singer's
+    register purely for a sensible reported Hz value.
+    """
     folded_pitches = voiced.copy()
     while np.any(folded_pitches > 120):
         folded_pitches = np.where(folded_pitches > 120, folded_pitches / 2, folded_pitches)
@@ -31,17 +50,24 @@ def _detect_tonic(voiced):
     smoothed = uniform_filter1d(hist.astype(float), size=5)
     median_pitch = np.median(voiced)
 
-    candidate_indices = np.argsort(smoothed)[::-1][:5]
-    best_tonic, best_score = None, -1
+    candidate_indices = np.argsort(smoothed)[::-1][:k]
+    best_tonic, best_score = None, -1.0
     for idx in candidate_indices:
         if smoothed[idx] == 0:
             continue
         cand = (bin_edges[idx] + bin_edges[idx + 1]) / 2
         while cand * 2 < median_pitch:
             cand *= 2
-        cents = 1200 * np.log2(voiced / cand)
-        h, _ = np.histogram(cents % 1200, bins=120, range=(0, 1200))
-        score = float(np.sum(h ** 2))
+        h, _ = np.histogram((1200 * np.log2(voiced / cand)) % 1200, bins=120, range=(0, 1200))
+        h = h.astype(float)
+        if scorer == "sa_pa":
+            p = h / (h.sum() + 1e-9)
+            # +/-1 bin (= +/-10 cents) around Sa (bin 0) and Pa (bin 70).
+            sa = p[[-1, 0, 1]].sum()
+            pa = p[[69, 70, 71]].sum()
+            score = float(sa + pa)
+        else:  # peakedness
+            score = float(np.sum(h ** 2))
         if score > best_score:
             best_score = score
             best_tonic = cand

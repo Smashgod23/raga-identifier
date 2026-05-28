@@ -24,6 +24,7 @@ backend/data/melspec/
 backend/data/ast_meta.json
 backend/data/train_v5_report.txt
 backend/data/tonic_candidates.npz
+backend/data/tonic_voiced_cache.npz
 backend/data/tonic_candidates_meta.json
 backend/data/tonic_detector_report.txt
 backend/.env

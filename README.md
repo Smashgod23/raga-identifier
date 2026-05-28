@@ -701,20 +701,55 @@ So the re-ranker as it exists today is shelved. Wiring it would actively make th
 | Phase 8 | pyin | heuristic | 60s | 60s | 37.36% | 67.91% |
 | v1 deployed | pyin | heuristic | 60s (PCD) | 60s | 8.32% | 28.57% |
 
-The next priority is the **bidirectional octave fold** in candidate generation. The tonic detector report's "perfect re-ranker ceiling" of 60.4% says the correct tonic is only in the top-5 candidates ~60% of the time, because the upward-only octave fold drops candidates an octave below the actual tonic for some recordings. Fixing the fold raises that ceiling and changes which candidates the re-ranker (or the heuristic) gets to choose from.
+### Phase 12 — The tonic scorer was the real bottleneck (sa_pa drone, +5.5 pp shipped)
 
-### What's left after Phase 11b
+Phase 11b shelved the re-ranker, and earlier notes (including an earlier version of this README) claimed the next lever was a **bidirectional octave fold** in candidate generation. Phase 12 ran the experiment and found that claim was simply **wrong**, then found the actual lever.
 
-Phase 11a + 11b together confirm tonic detection is the dominant bottleneck AND that the existing re-ranker as trained doesn't help — the training distribution doesn't match the production query offset. Open levers in expected-value order:
+**Why the octave fold is a non-lever.** Tonic correctness is judged octave-agnostically (the cent difference to the expert tonic is wrapped mod 1200), and — more fundamentally — the downstream TDMS feature is itself octave-folded (`cents mod 1200`). A tonic that is off by an exact octave produces a byte-identical TDMS. So the octave a candidate lands in is irrelevant to both the tonic metric and the raga prediction; only its pitch class matters. `backend/src/eval_tonic_candidates.py` confirmed it directly: fold strategies `up`, `none`, and `bidirectional` give identical ceilings at every candidate count K. The fold cannot move accuracy.
 
-1. **Bidirectional octave fold in candidate generation.** The tonic detector report's perfect-re-ranker ceiling is only 60.4% because the upward-only fold drops candidates an octave low for some recordings. Rewriting the fold to be bidirectional raises that ceiling. Cheapest deployable lift, ~half a day in `predict.py._detect_tonic`.
-2. **Retrain the tonic re-ranker on production-offset candidates.** Phase 11b showed the existing re-ranker regresses because it saw offset=10s candidates at training time and offset=60s at inference. Re-running `extract_tonic_candidates.py` at production-equivalent offsets and retraining the MLP would, in principle, recover the +2 pp lift. Maybe a day of work plus eval.
-3. **Move tonic detection out of the per-window loop.** Currently each of the three 60s query windows runs `_detect_tonic` independently. The three estimates may disagree by an octave, in which case the averaged TDMS is the wrong feature. Pin the tonic from the first successful window (or vote across the three). Cheap experiment.
-4. **CREPE on the long templates.** Phase 9b said CREPE buys +5.7 pp top-1 vs pyin on 60s windows with expert tonic. CREPE may also be more robust to noisy pitch under bad tonic estimates. Templates are built offline so CREPE's slowness doesn't hurt at inference.
-5. **Full-recording templates instead of 5 min.** Linear extension of the Phase 10a result — probably +2-4 pp top-1 as the template distribution gets denser.
-6. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** ISMIR 2019 reports 88.1% on this dataset. The move if the above levers still leave the audio pipeline short of the 85% ceiling.
+**What actually limits the ceiling: candidate count.** The same diagnostic swept K (octave-agnostic, 60s window):
 
-What's explicitly NOT a good lever based on Phase 4-8 evidence: bigger from-scratch CNNs, general-audio foundation model embeddings, or data augmentation on the existing 689 recordings. Those have all been tried and failed for principled reasons documented above.
+| K | Ceiling (true Sa pitch-class in top-K) | Peakedness top-1 |
+|---|---|---|
+| 5 | 62.7% | 51.9% |
+| 8 | 79.0% | 51.9% |
+| 10 | 83.5% | 51.9% |
+| 15 | 89.8% | 51.9% |
+
+More candidates raises the *reachable* ceiling enormously, but the old peakedness scorer is pinned at 51.9% no matter how many candidates it is given. **The scorer, not the candidate pool, was the bottleneck.**
+
+**The fix: score on the tanpura drone (Phase 12b).** The tanpura drones Sa and its fifth Pa continuously throughout every Carnatic performance. So the true Sa uniquely has strong energy at *both* 0 cents and +700 cents in its tonic-relative pitch-class distribution. A wrong tonic (e.g. Pa-lock) does not satisfy both. Replacing the peakedness scorer with this `sa_pa` drone score (`backend/src/eval_tonic_scorers.py`, no model, no retraining):
+
+| Scorer | K=5 top-1 | K=10 top-1 |
+|---|---|---|
+| peakedness (old production) | 51.9% | 51.9% |
+| sa (Sa energy only) | 53.5% | 52.7% |
+| **sa_pa (Sa + Pa drone)** | **57.9%** | **65.0%** |
+
+`sa_pa` at K=10 hits **65.0% tonic top-1 — +13.1 pp** over production, with a one-function change and zero new dependencies.
+
+**End-to-end confirmation (Phase 12c).** Wiring `sa_pa` + K=10 into `predict._detect_tonic` and re-running the full production multi-window raga pipeline:
+
+| Step | Tonic | Top-1 | Top-5 |
+|---|---|---|---|
+| Phase 10b | expert (perfect) | 73.23% | 95.31% |
+| **Phase 12c (shipped)** | **sa_pa, K=10** | **41.29%** | **69.58%** |
+| Phase 11a | peakedness, K=5 | 35.83% | 63.67% |
+| v1 deployed | peakedness | 8.32% | 28.57% |
+
+The tonic gain translated to **+5.46 pp top-1 / +5.91 pp top-5** end-to-end. The `/predict-tdms` endpoint now serves ~41% top-1 / ~70% top-5 — 5× v1's deployed top-1 — and the same `_detect_tonic` improvement flows into the v1 `/predict` endpoint too. This shipped in `predict.py`.
+
+### What's left after Phase 12
+
+Open levers in expected-value order:
+
+1. **Retrain the tonic re-ranker on top of sa_pa candidates.** The ceiling at K=10 is 83.5%; sa_pa reaches 65%. A learned scorer trained on production-offset candidates (Phase 11b's failure was offset mismatch, not a dead end) could close part of the remaining 18 pp tonic gap, which is worth ~10-15 pp raga top-1 by the Phase 10b/11a slope.
+2. **CREPE on the long templates.** Phase 9b: +5.7 pp top-1 vs pyin with expert tonic; templates are offline so CREPE's slowness doesn't hurt at inference.
+3. **Move tonic detection out of the per-window loop / vote across windows.** The three query windows each detect their own tonic; a per-recording vote would cut variance.
+4. **Full-recording templates instead of 5 min.** Linear extension of the Phase 10a result — probably +2-4 pp top-1.
+5. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** ISMIR 2019 reports 88.1%. The move if the above leave the pipeline short of the ceiling.
+
+What's explicitly NOT a good lever based on Phase 4-12 evidence: bigger from-scratch CNNs, general-audio foundation model embeddings, data augmentation on the existing 689 recordings, or any octave-fold change. All tried and ruled out for principled reasons documented above.
 
 ---
 
@@ -740,7 +775,8 @@ The honest accuracy story, ordered from the most generous evaluation protocol to
 | TDMS k-NN sym KL (CREPE + expert tonic, 60s clip) | 51.51% | 87.36% |
 | TDMS k-NN sym KL (pyin + expert tonic, 60s clip) | 45.81% | 82.93% |
 | TDMS k-NN sym KL (pyin + heuristic tonic, 60s clip) | 37.36% | 67.91% |
-| **TDMS k-NN sym KL (pyin + heuristic tonic, 5-min template + 3 × 60s averaged query — `/predict-tdms` production)** | **35.83%** | **63.67%** |
+| **TDMS k-NN sym KL (pyin + sa_pa tonic K=10, 5-min template + 3 × 60s averaged query — `/predict-tdms` production)** | **41.29%** | **69.58%** |
+| TDMS k-NN sym KL (pyin + peakedness tonic K=5, 5-min template + 3 × 60s averaged query — Phase 11a) | 35.83% | 63.67% |
 | TDMS k-NN sym KL (pyin + re-ranker tonic, 5-min template + 3 × 60s averaged query — Phase 11b: regression) | 34.08% | 61.25% |
 | v1 deployed pipeline (pyin + heuristic tonic, 60s clip — `/predict`) | 8.32% | 28.57% |
 

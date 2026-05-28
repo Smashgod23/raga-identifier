@@ -1,0 +1,27 @@
+==============================================================================
+Phase 12 diagnostic: tonic candidate ceiling vs K and fold strategy
+Window: 60s @ +10s   Matching: octave-agnostic, +/-25 cents   Recordings: 480
+==============================================================================
+
+  strategy                     ceiling (Sa in top-K)    heuristic top-1 
+  ---------------------------- ------------------------ ----------------
+  fold=up   K= 5                 62.7%                    51.9%
+  fold=up   K= 8                 79.0%                    51.9%
+  fold=up   K=10                 83.5%                    51.9%
+  fold=up   K=15                 89.8%                    51.9%
+
+  fold=none K= 5                 62.7%                    51.9%
+  fold=none K= 8                 79.0%                    51.9%
+  fold=none K=10                 83.5%                    51.9%
+  fold=none K=15                 89.8%                    51.9%
+
+  fold=bi   K= 5                 62.7%                    51.9%
+  fold=bi   K= 8                 79.0%                    51.9%
+  fold=bi   K=10                 83.5%                    51.9%
+  fold=bi   K=15                 89.8%                    51.9%
+
+Reading:
+  - If fold=up and fold=none give identical ceilings at each K, the octave
+    fold is confirmed a non-lever (matching is octave-agnostic).
+  - If ceiling rises with K, more candidates is the cheap production fix.
+  - heuristic top-1 is what production's _detect_tonic actually achieves.

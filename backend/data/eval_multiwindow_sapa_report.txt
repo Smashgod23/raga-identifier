@@ -1,0 +1,13 @@
+==============================================================================
+Phase 12c: end-to-end raga eval with sa_pa tonic detector (K=10)
+Templates: 5-min pyin + EXPERT tonic   Queries: 3x60s avg, pyin + sa_pa tonic
+Recordings: 480/480
+==============================================================================
+
+  Phase 12c (sa_pa tonic)      top1 41.29% +/- 0.73   top5 69.58% +/- 0.13
+
+Comparison ladder:
+  Phase 10b  expert tonic           top1 73.23%   top5 95.31%
+  Phase 12c  sa_pa tonic (K=10)     top1 41.29%   top5 69.58%
+  Phase 11a  peakedness tonic (K=5) top1 35.83%   top5 63.67%
+  v1 deployed                       top1  8.32%   top5 28.57%
