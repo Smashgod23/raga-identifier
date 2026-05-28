@@ -603,15 +603,41 @@ The clear lesson is that **no single audio-side substitution closes the gap to t
 
 Top-5 at 87.36% is the surprising number, though. The audio pipeline with CREPE puts the right raga in the top 5 *87% of the time*. That's a deployable "did you mean?" UX: show 5 candidates with a short audio sample of each, let the user pick. The model doesn't have to be right on top-1 if the interaction surface absorbs the uncertainty.
 
-### What's left after Phase 9
+### Phase 10a — Long templates, short queries
+
+Phase 9 left ~20 pp of the audio gap on the table, attributed to window length. Phase 10a tests the "asymmetric template" hypothesis: build TDMS templates from a much longer window of each recording (5 minutes centered at the midpoint), then accept a short 60s query from the user side. The training-test split stays recording-aware, so a held-out recording's audio never reaches the model in any form, but within each recording the template is built from a denser pitch contour than the query.
+
+`backend/src/eval_long_templates.py` extracts 5-minute templates for all 480 CompMusic recordings with pyin + expert tonic, then evaluates the same 1-NN symmetric-KL classifier against the existing Phase 9a 60s query set. The symmetric-vs-asymmetric comparison shares everything except template length, so the delta is directly the window-length contribution.
+
+Result: **55.10% ± 0.94% top-1, 88.74% ± 0.77% top-5.**
+
+Compared to Phase 9a's 60s+60s baseline (45.81%, 82.93%), Phase 10a buys **+9.29 pp top-1 and +5.82 pp top-5** from a single change in template length. Two surprising things:
+
+1. The lift is large for what looks like a small intervention — a 5× longer template moves accuracy almost as much as adding the expert tonic did in the first place.
+2. Phase 10a (pyin + 5-min templates) beats Phase 9b (CREPE + 60s templates) by 3.59 pp top-1. A longer template more than compensates for a worse pitch extractor. The audio bottleneck is sparsity, not noise.
+
+Full ladder including Phase 10a:
+
+| Step | Pitch | Tonic | Template window | Query window | Top-1 | Top-5 |
+|---|---|---|---|---|---|---|
+| Phase 1 ceiling | expert | expert | full recording | (same) | 85.67% | 97.58% |
+| **Phase 10a** | **pyin** | **expert** | **5 min** | **60s** | **55.10%** | **88.74%** |
+| Phase 9b | CREPE small | expert | 60s | 60s | 51.51% | 87.36% |
+| Phase 9a | pyin | expert | 60s | 60s | 45.81% | 82.93% |
+| Phase 8 | pyin | heuristic | 60s | 60s | 37.36% | 67.91% |
+| v1 deployed | pyin | heuristic | 60s (PCD feature, not TDMS) | 60s | 8.32% | 28.57% |
+
+The deployable recipe now writes itself: build long templates once (this is a fixed corpus cost, runs offline, ships as a fixed asset on Hugging Face Hub), serve short user queries with the same pyin + tonic detector + TDMS extraction at inference. The remaining 30 pp gap to the Phase 1 ceiling is split between pitch quality (CREPE on long templates would close part of it) and any audio still left on the table beyond 5 minutes.
+
+### What's left after Phase 10a
 
 Open levers, in expected-value order:
 
-1. **Wire the tonic detector** (`models/tonic_detector_v1.pt`) into `api/main.py`. Worth +2.1 pp on tonic accuracy → up to +5-8 pp on raga top-1 in the audio pipeline based on Phase 9a. One day of work.
-2. **Switch pyin → CREPE in production** if Phase 9b confirms the swap helps. CREPE adds ~3-5 seconds of latency per query on CPU; that's user-visible but not unacceptable if it doubles accuracy.
-3. **Multi-window voting at inference.** Currently `predict.py` extracts features from one 60s window. Extracting from three windows (25%/50%/75% through the recording) and averaging their probability distributions should reduce variance from any single bad clip.
-4. **Move from 360-D PCD to TDMS as the primary feature.** This requires rebuilding the 480 templates from audio (Phase 8 cross-source numbers showed expert templates don't generalize), serving them from Hugging Face Hub, and changing `_detect_tonic` + `extract_features_from_audio` to produce TDMS instead.
-5. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** A learned sequence model is the natural complement to TDMS's statistical phrase-order capture. ISMIR 2019 reports 88.1% on this dataset. The training cost is real but the data is there.
+1. **Deploy the Phase 10a recipe.** Long templates + 60s queries + pyin + heuristic tonic should land at roughly 47-50% top-1 / ~85% top-5 in production (subtracting ~5-8 pp for the heuristic tonic vs the expert tonic Phase 10a uses). That's 5-6× v1's actual deployed accuracy, with the right shape for a "did you mean? here are five" UX. One day of work to wire `models/tonic_detector_v1.pt` and swap the inference call.
+2. **Multi-window query aggregation (Phase 10b).** Extract three 60s windows from the user upload (25%, 50%, 75% through), average their TDMSs before the 1-NN lookup. Probably 2-5 pp on top of Phase 10a. Cheap to test.
+3. **CREPE on the long templates.** Phase 9b said CREPE buys +5.7 pp on 60s windows; the question is whether that stacks with longer templates. Templates are an offline, one-time cost so CREPE's slowness only hurts when we rebuild them, not at every query. Worth running.
+4. **Wire the tonic detector** (`models/tonic_detector_v1.pt`) into `api/main.py`. Worth +2.1 pp on tonic accuracy → ~+5-8 pp on raga top-1 from Phase 9a's accounting.
+5. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** ISMIR 2019 reports 88.1% on this dataset. Training cost is real but the data is there. This is the move if Phase 10 + CREPE still leaves us short of a deployable top-1 number.
 
 What's explicitly NOT a good lever based on Phase 4-8 evidence: bigger from-scratch CNNs, general-audio foundation model embeddings, or data augmentation on the existing 689 recordings. Those have all been tried and failed for principled reasons documented above.
 
@@ -634,8 +660,10 @@ The honest accuracy story, ordered from the most generous evaluation protocol to
 | v1 baseline (MLP on expert 360-D PCD, 5-fold CV) | 71.79% | 94.25% |
 | TDMS k-NN sym KL (expert pitch + tonic, 5-fold CV) | 85.67% | 97.58% |
 | TDMS k-NN sym KL (expert pitch + tonic, leave-one-out) — paper match | 86.67% | 97.71% |
-| TDMS k-NN sym KL (pyin pitch + expert tonic, 60s clip) | 45.81% | 82.93% |
-| TDMS k-NN sym KL (pyin pitch + heuristic tonic, 60s clip) | 37.36% | 67.91% |
+| TDMS k-NN sym KL (pyin + expert tonic, 5-min template + 60s query) | 55.10% | 88.74% |
+| TDMS k-NN sym KL (CREPE + expert tonic, 60s clip) | 51.51% | 87.36% |
+| TDMS k-NN sym KL (pyin + expert tonic, 60s clip) | 45.81% | 82.93% |
+| TDMS k-NN sym KL (pyin + heuristic tonic, 60s clip) | 37.36% | 67.91% |
 | v1 deployed pipeline (pyin + heuristic tonic, 60s clip) | 8.32% | 28.57% |
 
 The model performs best on ragas with very distinctive swara sets. On real recordings, Todi came in at 97.9% confidence, Kalyani at 97.3%, and Shankarabharanam at 97.6% (from the middle of an MS Subbulakshmi recording) — though those confidence numbers come from the model that's actually only ~8% accurate on top-1 in benchmark, so they should be read as "what the model thinks" rather than "how often the model is right." The hardest cases at the research-evaluation level (expert features) are pentatonic ragas that share many swaras, like Mohanam and Bilahari, where the difference lies in specific ornamental patterns rather than the swara set alone. At the deployment level (pyin features), basically every prediction is hard.
