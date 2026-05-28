@@ -247,15 +247,34 @@ async def predict_youtube(request: YouTubeRequest):
 
     override = request.tonic_hz if request.tonic_hz and request.tonic_hz > 0 else None
 
+    # YouTube has been ramping up bot detection against cloud-IP yt-dlp calls
+    # over 2025-2026. Specifying alternative player clients (mweb/ios) bypasses
+    # most "Sign in to confirm you're not a bot" rejections that ship through
+    # the default web client. Three strategies tried in order; all are no-ops
+    # for videos that work on the default client. The last attempt's stderr
+    # is surfaced in the 422 response so the failure mode is debuggable.
+    EXTRACTOR_STRATEGIES = [
+        ["--extractor-args", "youtube:player_client=mweb,ios,web"],
+        ["--extractor-args", "youtube:player_client=ios"],
+        [],  # plain (default)
+    ]
+    last_stderr = ""
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            dur_result = subprocess.run(
-                ["yt-dlp", "--no-playlist", "--print", "duration", url],
-                capture_output=True, text=True, timeout=30
-            )
-            duration = int(dur_result.stdout.strip()) if dur_result.returncode == 0 else 0
-        except (subprocess.TimeoutExpired, ValueError):
-            duration = 0
+        # Probe duration with whichever strategy works first.
+        duration = 0
+        for strat in EXTRACTOR_STRATEGIES:
+            try:
+                dur_result = subprocess.run(
+                    ["yt-dlp", "--no-playlist", "--print", "duration", *strat, url],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if dur_result.returncode == 0 and dur_result.stdout.strip():
+                    duration = int(dur_result.stdout.strip())
+                    break
+                last_stderr = (dur_result.stderr or "")[-400:]
+            except (subprocess.TimeoutExpired, ValueError):
+                continue
 
         if duration > LONG_CLIP_THRESHOLD:
             quarter = duration // 4
@@ -274,22 +293,29 @@ async def predict_youtube(request: YouTubeRequest):
             os.makedirs(seg_dir, exist_ok=True)
             output_template = os.path.join(seg_dir, "audio.%(ext)s")
 
-            dl_args = [
-                "yt-dlp", "--no-playlist",
-                "-x", "--audio-format", "wav",
-                "-o", output_template,
-            ]
-            if seg is not None:
-                dl_args += ["--download-sections", f"*{seg[0]}-{seg[1]}"]
-            dl_args.append(url)
+            download_ok = False
+            for strat in EXTRACTOR_STRATEGIES:
+                dl_args = [
+                    "yt-dlp", "--no-playlist",
+                    "-x", "--audio-format", "wav",
+                    "-o", output_template,
+                    *strat,
+                ]
+                if seg is not None:
+                    dl_args += ["--download-sections", f"*{seg[0]}-{seg[1]}"]
+                dl_args.append(url)
 
-            try:
-                result = subprocess.run(
-                    dl_args, capture_output=True, text=True, timeout=120
-                )
-            except subprocess.TimeoutExpired:
-                continue
-            if result.returncode != 0:
+                try:
+                    result = subprocess.run(dl_args, capture_output=True, text=True, timeout=120)
+                except subprocess.TimeoutExpired:
+                    last_stderr = "yt-dlp timed out (120s)"
+                    continue
+                if result.returncode == 0:
+                    download_ok = True
+                    break
+                last_stderr = (result.stderr or "")[-400:]
+
+            if not download_ok:
                 continue
 
             wav_files = globmod.glob(os.path.join(seg_dir, "audio.*"))
@@ -309,7 +335,13 @@ async def predict_youtube(request: YouTubeRequest):
                 continue
 
         if not all_probs:
-            raise HTTPException(422, "Could not extract audio from this video")
+            # Surface the underlying yt-dlp failure so we can tell whether it
+            # is a bot-detection block, an age/region gate, a stale extractor,
+            # or just a bad URL. Truncated to last 400 chars.
+            detail = "Could not extract audio from this video."
+            if last_stderr:
+                detail += f" yt-dlp said: {last_stderr.strip()}"
+            raise HTTPException(422, detail)
 
         avg_probs = np.mean(all_probs, axis=0)
         used_tonic = override if override is not None else anchor_tonic
