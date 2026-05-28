@@ -1,0 +1,18 @@
+==============================================================================
+Phase 10b: multi-window query aggregation
+Templates: 5-min pyin + expert tonic     Queries: 3 x 60s averaged
+Recordings: 478/480
+==============================================================================
+
+  Phase 10a single 60s query             top1 55.10% +/- 0.94   top5 88.74% +/- 0.77
+  Phase 10b 3-window avg query           top1 73.23% +/- 0.73   top5 95.31% +/- 0.16
+  Delta vs Phase 10a                     +18.13 pp top-1     + 6.57 pp top-5
+
+Comparison ladder:
+  Phase 1   expert pitch + expert tonic, full recording        top1 85.67%   top5 97.58%
+  Phase 10b pyin   + expert tonic, 5min template + 3x60s avg   top1 73.23%   top5 95.31%
+  Phase 10a pyin   + expert tonic, 5min template + 60s query   top1 55.10%   top5 88.74%
+  Phase 9b  CREPE  + expert tonic, 60s template + 60s query    top1 51.51%   top5 87.36%
+  Phase 9a  pyin   + expert tonic, 60s template + 60s query    top1 45.81%   top5 82.93%
+  Phase 8   pyin   + heuristic tonic, 60s + 60s                 top1 37.36%   top5 67.91%
+  v1 deployed audio                                              top1  8.32%   top5 28.57%

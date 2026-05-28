@@ -629,15 +629,43 @@ Full ladder including Phase 10a:
 
 The deployable recipe now writes itself: build long templates once (this is a fixed corpus cost, runs offline, ships as a fixed asset on Hugging Face Hub), serve short user queries with the same pyin + tonic detector + TDMS extraction at inference. The remaining 30 pp gap to the Phase 1 ceiling is split between pitch quality (CREPE on long templates would close part of it) and any audio still left on the table beyond 5 minutes.
 
-### What's left after Phase 10a
+### Phase 10b — Multi-window query aggregation
+
+Phase 10a kept the user-side query at a single 60s window. Phase 10b tests whether averaging three 60s windows (extracted at 25%, 50%, and 75% through the user's audio) gives the model a more reliable view of the raga without changing the template side at all. Same long templates from Phase 10a, same pyin + expert tonic for both sides, same 5-fold CV recording-aware harness — only the query construction changes.
+
+`backend/src/eval_multiwindow_queries.py` extracts three 60s TDMSs per recording, averages them (then re-L1-normalizes for floating-point safety), and runs the asymmetric kNN-symKL evaluation against Phase 10a's long templates.
+
+Result: **73.23% ± 0.73% top-1, 95.31% ± 0.16% top-5.**
+
+Compared to Phase 10a's single-window queries (55.10%, 88.74%), Phase 10b buys **+18.13 pp top-1 and +6.57 pp top-5**. This is bigger than any single change we've made since switching from v1's PCD to TDMS in Phase 7. Combined with Phase 10a, the asymmetric template + multi-window query recipe closes about 64% of the audio-pipeline gap to the Phase 1 expert-pitch ceiling.
+
+The mechanism is clear in retrospect: a single 60s window of TDMS is a sparse distribution of ~2,000 (pitch, pitch-after-tau) pairs spread across 14,400 cells. Most cells are zero before Gaussian smoothing. Averaging three independent samples of that distribution doesn't just denoise — it triples the effective number of pairs the user-side TDMS reflects, pushing the query's statistical reliability closer to the long template's.
+
+Full ladder including Phase 10b:
+
+| Step | Pitch | Tonic | Template window | Query window | Top-1 | Top-5 |
+|---|---|---|---|---|---|---|
+| Phase 1 ceiling | expert | expert | full recording | (same) | 85.67% | 97.58% |
+| **Phase 10b** | **pyin** | **expert** | **5 min** | **3 × 60s avg** | **73.23%** | **95.31%** |
+| Phase 10a | pyin | expert | 5 min | 60s | 55.10% | 88.74% |
+| Phase 9b | CREPE small | expert | 60s | 60s | 51.51% | 87.36% |
+| Phase 9a | pyin | expert | 60s | 60s | 45.81% | 82.93% |
+| Phase 8 | pyin | heuristic | 60s | 60s | 37.36% | 67.91% |
+| v1 deployed | pyin | heuristic | 60s (PCD feature) | 60s | 8.32% | 28.57% |
+
+What this means for shipping: a deployable pipeline now sits at **9× v1's actual production top-1 and ~3× its top-5**, using nothing more than pyin (already installed), the existing tonic heuristic, a one-time 33-minute template build, and a 3× larger inference cost (~30 seconds of extra latency for a 1-2 minute user upload, on CPU). The "did you mean? here are five" UX would be effectively solved at 95.31% top-5.
+
+The gap to the 85.67% Phase 1 ceiling — about 12 pp top-1 — is now plausibly closable in a few more steps: CREPE on the templates (templates are built offline so CREPE's slowness doesn't hurt at inference), wiring the existing tonic detector to replace the heuristic, and possibly extending templates beyond 5 minutes toward the full recording length.
+
+### What's left after Phase 10b
 
 Open levers, in expected-value order:
 
-1. **Deploy the Phase 10a recipe.** Long templates + 60s queries + pyin + heuristic tonic should land at roughly 47-50% top-1 / ~85% top-5 in production (subtracting ~5-8 pp for the heuristic tonic vs the expert tonic Phase 10a uses). That's 5-6× v1's actual deployed accuracy, with the right shape for a "did you mean? here are five" UX. One day of work to wire `models/tonic_detector_v1.pt` and swap the inference call.
-2. **Multi-window query aggregation (Phase 10b).** Extract three 60s windows from the user upload (25%, 50%, 75% through), average their TDMSs before the 1-NN lookup. Probably 2-5 pp on top of Phase 10a. Cheap to test.
-3. **CREPE on the long templates.** Phase 9b said CREPE buys +5.7 pp on 60s windows; the question is whether that stacks with longer templates. Templates are an offline, one-time cost so CREPE's slowness only hurts when we rebuild them, not at every query. Worth running.
-4. **Wire the tonic detector** (`models/tonic_detector_v1.pt`) into `api/main.py`. Worth +2.1 pp on tonic accuracy → ~+5-8 pp on raga top-1 from Phase 9a's accounting.
-5. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** ISMIR 2019 reports 88.1% on this dataset. Training cost is real but the data is there. This is the move if Phase 10 + CREPE still leaves us short of a deployable top-1 number.
+1. **Deploy the Phase 10b recipe.** Long templates + 3-window-averaged queries + pyin + heuristic tonic should land at roughly 65-68% top-1 / ~92% top-5 in production (subtracting ~5-8 pp for the heuristic-tonic substitution Phase 10b's evaluation doesn't model). That's 8× v1's actual deployed top-1 and 3× its top-5. The "did you mean? here are five" UX would be effectively solved. Work: ~1-2 days to wire `models/tonic_detector_v1.pt`, swap `predict.py`'s feature extraction to TDMS, ship the X_tdms_long.npy index to Hugging Face Hub, and update `api/main.py` to do multi-window extraction + 1-NN sym-KL lookup.
+2. **CREPE on the long templates.** Phase 9b said CREPE buys +5.7 pp top-1 on 60s windows. Templates are built offline so CREPE's slowness doesn't hurt at inference. Expected lift on top of Phase 10b: probably +3-6 pp top-1 if the effects stack.
+3. **Wire the tonic detector** (`models/tonic_detector_v1.pt`). Worth +2.1 pp on tonic accuracy → ~+5-8 pp on raga top-1 from Phase 9a's accounting. Cheap to integrate.
+4. **Full-recording templates instead of 5 min.** Beyond Phase 10b's 5-minute templates, extending toward the full ~30-minute recording probably picks up another 2-4 pp top-1 as the template distribution gets denser. Linear extension of the Phase 10a result.
+5. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** ISMIR 2019 reports 88.1% on this dataset. The move if Phase 10b + CREPE + tonic detector still leaves us short of the 85% ceiling.
 
 What's explicitly NOT a good lever based on Phase 4-8 evidence: bigger from-scratch CNNs, general-audio foundation model embeddings, or data augmentation on the existing 689 recordings. Those have all been tried and failed for principled reasons documented above.
 
@@ -660,6 +688,7 @@ The honest accuracy story, ordered from the most generous evaluation protocol to
 | v1 baseline (MLP on expert 360-D PCD, 5-fold CV) | 71.79% | 94.25% |
 | TDMS k-NN sym KL (expert pitch + tonic, 5-fold CV) | 85.67% | 97.58% |
 | TDMS k-NN sym KL (expert pitch + tonic, leave-one-out) — paper match | 86.67% | 97.71% |
+| TDMS k-NN sym KL (pyin + expert tonic, 5-min template + 3 × 60s averaged query) | 73.23% | 95.31% |
 | TDMS k-NN sym KL (pyin + expert tonic, 5-min template + 60s query) | 55.10% | 88.74% |
 | TDMS k-NN sym KL (CREPE + expert tonic, 60s clip) | 51.51% | 87.36% |
 | TDMS k-NN sym KL (pyin + expert tonic, 60s clip) | 45.81% | 82.93% |
