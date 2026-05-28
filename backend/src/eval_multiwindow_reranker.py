@@ -47,14 +47,97 @@ WINDOW_FRACTIONS = (0.25, 0.50, 0.75)
 RERANKER_NPZ = "models/tonic_detector_v1.npz"
 
 
+class _LocalTonicReRanker:
+    """Self-contained copy of the trained tonic-detector forward pass.
+
+    Phase 11b found the re-ranker regresses end-to-end so the wiring in
+    predict.py was reverted before merge. This class lives here so the
+    eval script remains self-reproducible against HEAD; merging it into
+    predict.py is deferred until the re-ranker is retrained on
+    production-offset candidates (see Phase 11b notes in the README).
+    """
+
+    def __init__(self, npz_path: str):
+        z = np.load(npz_path)
+        self.fc0_W = z["fc0_W"]; self.fc0_b = z["fc0_b"]
+        self.bn1_gamma = z["bn1_gamma"]; self.bn1_beta = z["bn1_beta"]
+        self.bn1_mean = z["bn1_mean"]; self.bn1_var = z["bn1_var"]
+        self.fc4_W = z["fc4_W"]; self.fc4_b = z["fc4_b"]
+        self.bn5_gamma = z["bn5_gamma"]; self.bn5_beta = z["bn5_beta"]
+        self.bn5_mean = z["bn5_mean"]; self.bn5_var = z["bn5_var"]
+        self.fc8_W = z["fc8_W"]; self.fc8_b = z["fc8_b"]
+        self.eps = float(z["bn_eps"])
+
+    @staticmethod
+    def _bn(x, gamma, beta, mean, var, eps):
+        return (x - mean) / np.sqrt(var + eps) * gamma + beta
+
+    def score(self, features: np.ndarray) -> np.ndarray:
+        x = features @ self.fc0_W.T + self.fc0_b
+        x = self._bn(x, self.bn1_gamma, self.bn1_beta, self.bn1_mean, self.bn1_var, self.eps)
+        x = np.maximum(x, 0.0)
+        x = x @ self.fc4_W.T + self.fc4_b
+        x = self._bn(x, self.bn5_gamma, self.bn5_beta, self.bn5_mean, self.bn5_var, self.eps)
+        x = np.maximum(x, 0.0)
+        x = x @ self.fc8_W.T + self.fc8_b
+        return x.squeeze(-1)
+
+
+def _detect_tonic_with_reranker(voiced, reranker: "_LocalTonicReRanker") -> float | None:
+    """Mirrors predict._detect_tonic's candidate generation, then scores the
+    5 candidates with the re-ranker instead of the peakedness heuristic."""
+    from scipy.ndimage import uniform_filter1d
+
+    folded = voiced.copy()
+    while np.any(folded > 120):
+        folded = np.where(folded > 120, folded / 2, folded)
+    while np.any(folded < 60):
+        folded = np.where(folded < 60, folded * 2, folded)
+    hist, bin_edges = np.histogram(folded, bins=200, range=(60, 120))
+    smoothed = uniform_filter1d(hist.astype(float), size=5)
+    median_pitch = float(np.median(voiced))
+
+    candidate_indices = np.argsort(smoothed)[::-1][:5]
+    feats, cand_hzs = [], []
+    for idx in candidate_indices:
+        if smoothed[idx] == 0:
+            continue
+        cand = (bin_edges[idx] + bin_edges[idx + 1]) / 2
+        while cand * 2 < median_pitch:
+            cand *= 2
+        cents = 1200.0 * np.log2(voiced / cand)
+        cents_mod = cents % 1200
+        h_raw, _ = np.histogram(cents_mod, bins=120, range=(0, 1200))
+        peakedness = float(np.sum(h_raw ** 2))
+        sa_mask = (np.abs(cents_mod) < 25.0) | (np.abs(cents_mod - 1200) < 25.0)
+        sa_fraction = float(sa_mask.mean())
+        hist_count = float(smoothed[idx])
+        pcd, _ = np.histogram(cents_mod, bins=120, range=(0, 1200), density=True)
+        feat = np.concatenate([
+            np.array([
+                np.log(max(cand, 1e-3)),
+                peakedness,
+                np.log(max(hist_count, 1)),
+                sa_fraction,
+            ], dtype=np.float32),
+            pcd.astype(np.float32),
+        ])
+        feats.append(feat)
+        cand_hzs.append(cand)
+
+    if not feats:
+        return None
+    logits = reranker.score(np.stack(feats))
+    return float(cand_hzs[int(np.argmax(logits))])
+
+
 def extract_one(args: tuple) -> dict:
     """Same as eval_multiwindow_heuristic.extract_one but with the re-ranker."""
     idx, recording_id, label = args
     import librosa
-    from predict import _detect_tonic, TonicReRanker
 
     # Each worker loads the re-ranker once. Small numpy bundle (~45KB).
-    reranker = TonicReRanker(RERANKER_NPZ)
+    reranker = _LocalTonicReRanker(RERANKER_NPZ)
 
     path = audio_path_for(recording_id)
     if not os.path.exists(path):
@@ -91,7 +174,7 @@ def extract_one(args: tuple) -> dict:
         if len(voiced) < 30:
             continue
 
-        tonic = _detect_tonic(voiced, reranker=reranker)
+        tonic = _detect_tonic_with_reranker(voiced, reranker)
         if tonic is None or tonic <= 0:
             continue
 
