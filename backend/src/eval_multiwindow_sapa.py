@@ -129,18 +129,19 @@ def main() -> None:
 
     lines = [
         "=" * 78,
-        "Phase 12c: end-to-end raga eval with sa_pa tonic detector (K=10)",
-        f"Templates: 5-min pyin + EXPERT tonic   Queries: 3x60s avg, pyin + sa_pa tonic",
+        "Phase 12d: end-to-end raga eval with exact-bin sa_pa tonic (K=15)",
+        f"Templates: 5-min pyin + EXPERT tonic   Queries: 3x60s avg, pyin + sa_pa exact K=15",
         f"Recordings: {int(keep.sum())}/480",
         "=" * 78,
         "",
-        f"  Phase 12c (sa_pa tonic)      top1 {m[0]*100:5.2f}% +/- {s[0]*100:.2f}   top5 {m[1]*100:5.2f}% +/- {s[1]*100:.2f}",
+        f"  Phase 12d (sa_pa exact, K=15)  top1 {m[0]*100:5.2f}% +/- {s[0]*100:.2f}   top5 {m[1]*100:5.2f}% +/- {s[1]*100:.2f}",
         "",
         "Comparison ladder:",
-        "  Phase 10b  expert tonic           top1 73.23%   top5 95.31%",
-        f"  Phase 12c  sa_pa tonic (K=10)     top1 {m[0]*100:5.2f}%   top5 {m[1]*100:5.2f}%",
-        "  Phase 11a  peakedness tonic (K=5) top1 35.83%   top5 63.67%",
-        "  v1 deployed                       top1  8.32%   top5 28.57%",
+        "  Phase 10b  expert tonic              top1 73.23%   top5 95.31%",
+        f"  Phase 12d  sa_pa exact (K=15)        top1 {m[0]*100:5.2f}%   top5 {m[1]*100:5.2f}%",
+        "  Phase 12c  sa_pa +/-1bin (K=10)      top1 41.29%   top5 69.58%",
+        "  Phase 11a  peakedness (K=5)          top1 35.83%   top5 63.67%",
+        "  v1 deployed                          top1  8.32%   top5 28.57%",
     ]
     write_report("data/eval_multiwindow_sapa_report.txt", lines)
     print("\n" + "\n".join(lines))

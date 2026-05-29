@@ -66,6 +66,36 @@ def score_candidate(pcd: np.ndarray, scorer: str) -> float:
     if scorer == "sa_pa_peak":
         sa_pa = bin_energy(p, 0) + bin_energy(p, 70)
         return sa_pa * float(np.sum(pcd ** 2))
+    # --- Phase 12d: harder drone-template variants ----------------------
+    if scorer == "sa_pa_ma":
+        # Some tanpuras tune the 2nd-3rd strings to Ma (500c) instead of Pa,
+        # esp. for ragas without Pa. Reward whichever fifth/fourth is present.
+        return bin_energy(p, 0) + max(bin_energy(p, 70), bin_energy(p, 50))
+    if scorer == "sa_pa_octave":
+        # Add the upper-octave Sa: a true tonic shows energy at 0 AND its own
+        # octave folds back to 0 anyway, so instead reward Sa, Pa, and the
+        # exact +1200 wrap is already at 0 — use a tighter Sa (half-width 0).
+        return bin_energy(p, 0, 0) + bin_energy(p, 70, 0)
+    if scorer == "drone_ratio":
+        # Concentration of energy at Sa+Pa relative to everything else. A
+        # wrong tonic spreads the drone energy across non-grid bins.
+        sa_pa = bin_energy(p, 0) + bin_energy(p, 70)
+        rest = 1.0 - sa_pa
+        return sa_pa / (rest + 1e-6)
+    if scorer == "sa_pa_wide":
+        # Wider tolerance (+/-2 bins = +/-20 cents) to absorb pyin jitter and
+        # gamaka spread around the held drone pitches.
+        return bin_energy(p, 0, 2) + bin_energy(p, 70, 2)
+    if scorer == "grid":
+        # Reward alignment of the whole PCD to the 12-tone tonic grid: energy
+        # summed at all 12 chromatic positions (bins 0,10,20,...,110). The
+        # true Sa makes the raga's swaras land on the grid; a wrong tonic
+        # smears them off-grid.
+        return float(sum(bin_energy(p, 10 * s, 1) for s in range(12)))
+    if scorer == "sa_pa_grid":
+        sa_pa = bin_energy(p, 0) + bin_energy(p, 70)
+        grid = float(sum(bin_energy(p, 10 * s, 1) for s in range(12)))
+        return sa_pa * grid
     raise ValueError(scorer)
 
 
@@ -105,16 +135,17 @@ def main() -> None:
     valid = [(v, e) for v, e in zip(voiced_list, experts) if v is not None and e > 0]
     n = len(valid)
 
-    scorers = ["peakedness", "sa", "sa_pa", "sa_pa_peak"]
-    Ks = [5, 10]
+    scorers = ["peakedness", "sa_pa", "sa_pa_ma", "sa_pa_octave",
+               "drone_ratio", "sa_pa_wide", "grid", "sa_pa_grid"]
+    Ks = [10, 15]
 
     lines = [
         "=" * 78,
-        "Phase 12b: tonic scorer comparison (octave-agnostic top-1, cached 60s pitch)",
-        f"Recordings: {n}   Baseline peakedness@K5 is current production",
+        "Phase 12d: harder tonic scorers (octave-agnostic top-1, cached 60s pitch)",
+        f"Recordings: {n}   Shipped production scorer is sa_pa @ K=10 (65.0%)",
         "=" * 78,
         "",
-        f"  {'scorer':14s} {'K=5 top-1':12s} {'K=10 top-1':12s}",
+        f"  {'scorer':14s} {'K=10 top-1':12s} {'K=15 top-1':12s}",
         f"  {'-'*14} {'-'*12} {'-'*12}",
     ]
 
@@ -135,11 +166,11 @@ def main() -> None:
             row += f"{acc:6.1f}%{'':6s}"
         lines.append(row)
 
-    base = results[("peakedness", 5)]
+    base = results[("sa_pa", 10)]
     lines += [
         "",
-        f"Production baseline (peakedness, K=5): {base:.1f}%",
-        "Deltas vs baseline:",
+        f"Shipped baseline (sa_pa, K=10): {base:.1f}%",
+        "Deltas vs shipped sa_pa@K10:",
     ]
     for scorer in scorers:
         for k in Ks:

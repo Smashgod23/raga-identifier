@@ -1,22 +1,34 @@
 ==============================================================================
-Phase 12b: tonic scorer comparison (octave-agnostic top-1, cached 60s pitch)
-Recordings: 480   Baseline peakedness@K5 is current production
+Phase 12d: harder tonic scorers (octave-agnostic top-1, cached 60s pitch)
+Recordings: 480   Shipped production scorer is sa_pa @ K=10 (65.0%)
 ==============================================================================
 
-  scorer         K=5 top-1    K=10 top-1  
+  scorer         K=10 top-1   K=15 top-1  
   -------------- ------------ ------------
   peakedness       51.9%        51.9%      
-  sa               53.5%        52.7%      
-  sa_pa            57.9%        65.0%      
-  sa_pa_peak       57.9%        65.0%      
+  sa_pa            65.0%        66.5%      
+  sa_pa_ma         53.3%        53.3%      
+  sa_pa_octave     67.7%        70.2%      
+  drone_ratio      65.0%        66.5%      
+  sa_pa_wide       63.1%        64.4%      
+  grid             49.4%        48.8%      
+  sa_pa_grid       65.0%        67.9%      
 
-Production baseline (peakedness, K=5): 51.9%
-Deltas vs baseline:
-  peakedness     K= 5:   +0.0 pp
-  peakedness     K=10:   +0.0 pp
-  sa             K= 5:   +1.7 pp
-  sa             K=10:   +0.8 pp
-  sa_pa          K= 5:   +6.0 pp
-  sa_pa          K=10:  +13.1 pp
-  sa_pa_peak     K= 5:   +6.0 pp
-  sa_pa_peak     K=10:  +13.1 pp
+Shipped baseline (sa_pa, K=10): 65.0%
+Deltas vs shipped sa_pa@K10:
+  peakedness     K=10:  -13.1 pp
+  peakedness     K=15:  -13.1 pp
+  sa_pa          K=10:   +0.0 pp
+  sa_pa          K=15:   +1.5 pp
+  sa_pa_ma       K=10:  -11.7 pp
+  sa_pa_ma       K=15:  -11.7 pp
+  sa_pa_octave   K=10:   +2.7 pp
+  sa_pa_octave   K=15:   +5.2 pp
+  drone_ratio    K=10:   +0.0 pp
+  drone_ratio    K=15:   +1.5 pp
+  sa_pa_wide     K=10:   -1.9 pp
+  sa_pa_wide     K=15:   -0.6 pp
+  grid           K=10:  -15.6 pp
+  grid           K=15:  -16.2 pp
+  sa_pa_grid     K=10:   +0.0 pp
+  sa_pa_grid     K=15:   +2.9 pp

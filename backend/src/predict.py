@@ -17,28 +17,34 @@ def hz_to_note_name(hz):
     return f'{note}{octave} ({cents:+d}¢)' if abs(cents) >= 3 else f'{note}{octave}'
 
 
-def _detect_tonic(voiced, k=10, scorer="sa_pa"):
+def _detect_tonic(voiced, k=15, scorer="sa_pa"):
     """Pick Sa from voiced pitches.
 
     Candidates are the top-K peaks of a smoothed folded-Hz histogram.
     The winner is the candidate that best satisfies the chosen scorer:
 
       scorer="sa_pa"  (default) — the tanpura drones Sa and its fifth Pa
-        continuously, so the true Sa uniquely has strong energy at BOTH
-        0 cents and +700 cents in its tonic-relative pitch-class
-        distribution. Scoring on that drone signature beats the old
-        peakedness metric by ~13 pp tonic top-1 at K=10 (Phase 12b
-        diagnostic), with no model and no retraining.
+        continuously, so the true Sa uniquely has strong energy at the
+        exact Sa (0 cents) and Pa (+700 cents) bins of its tonic-relative
+        pitch-class distribution. Scoring on that drone signature beats
+        the old peakedness metric by a wide margin (Phase 12 diagnostics).
+        The exact single-bin form (not +/-10 cents) tested best — the
+        drone is a precise sustained pitch, so a tight tolerance is more
+        discriminative against Pa-lock / Ri-lock wrong tonics.
 
       scorer="peakedness" — legacy: most concentrated cents-mod-1200
         distribution (Krumhansl-style L2). Kept for comparison/eval.
 
-    K defaults to 10: Phase 12 showed the correct Sa is in the top-10
-    histogram peaks 83.5% of the time vs only 62.7% for top-5, and the
-    sa_pa scorer can actually exploit the larger pool (peakedness could
-    not). Octave choice is irrelevant downstream — the TDMS/PCD feature
-    is octave-folded — so candidates are folded up to the singer's
-    register purely for a sensible reported Hz value.
+    K defaults to 15: Phase 12 showed the correct Sa pitch-class is in the
+    top-15 histogram peaks 89.8% of the time (vs 83.5% at K=10, 62.7% at
+    K=5), and the sa_pa scorer can exploit the larger pool (peakedness
+    could not — it was pinned at 51.9% for any K). Octave choice is
+    irrelevant downstream because the TDMS/PCD feature is octave-folded;
+    candidates are folded up to the singer's register only for a sensible
+    reported Hz value.
+
+    Tonic top-1 (octave-agnostic, 60s window, 480 CompMusic recordings):
+    peakedness 51.9%  ->  sa_pa+/-1bin@K10 65.0%  ->  sa_pa exact@K15 70.2%.
     """
     folded_pitches = voiced.copy()
     while np.any(folded_pitches > 120):
@@ -62,10 +68,9 @@ def _detect_tonic(voiced, k=10, scorer="sa_pa"):
         h = h.astype(float)
         if scorer == "sa_pa":
             p = h / (h.sum() + 1e-9)
-            # +/-1 bin (= +/-10 cents) around Sa (bin 0) and Pa (bin 70).
-            sa = p[[-1, 0, 1]].sum()
-            pa = p[[69, 70, 71]].sum()
-            score = float(sa + pa)
+            # Exact Sa (bin 0) + Pa (bin 70) energy. Tight single-bin
+            # tolerance tested better than +/-1 bin (Phase 12d).
+            score = float(p[0] + p[70])
         else:  # peakedness
             score = float(np.sum(h ** 2))
         if score > best_score:
