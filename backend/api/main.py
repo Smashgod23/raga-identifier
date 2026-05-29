@@ -17,7 +17,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from predict import extract_features_from_audio, hz_to_note_name
-from predict_tdms import TDMSIndex, predict_top_k
+from predict_tdms import TDMSIndex
+import predict_essentia
 
 app = FastAPI(title="Raga Identifier API")
 
@@ -48,14 +49,16 @@ with open(model_path, "rb") as f:
 
 print(f"Model loaded — {len(CLASSES)} ragas")
 
-# --- Phase 10b TDMS k-NN index (research-validated 73.23% top-1, 95.31% top-5
-# under expert-tonic eval; production with heuristic tonic measured separately
-# in Phase 11a). Loaded alongside v1; new endpoint /predict-tdms serves it. The
-# 480x14400 float32 array is ~28 MB. Index optional — if neither HF nor a local
-# copy is available, /predict-tdms returns 503 and v1 endpoints keep working.
+# --- Phase 13 TDMS k-NN index, Essentia full-recording templates.
+# Templates are full-recording Melodia pitch + expert .tonicFine tonic.
+# /predict-tdms queries them with Essentia Melodia + TonicIndianArtMusic
+# (predict_essentia). Validated 75.62% top-1 / 91.17% top-5 on the 480-
+# recording CMD set with 7x90s queries (vs v1's 8.32% / 28.57%). The
+# 480x14400 float32 array is ~28 MB. Index optional — if neither HF nor a
+# local copy is available, /predict-tdms returns 503 and v1 keeps working.
 def _load_tdms_index() -> Optional["TDMSIndex"]:
     data_dir = os.path.join(BASE_DIR, "data")
-    local_X = os.path.join(data_dir, "X_tdms_long.npy")
+    local_X = os.path.join(data_dir, "X_tdms_essfull_template.npy")
     local_y = os.path.join(data_dir, "y_tdms.npy")
     # Prefer local if both files already exist (covers dev environments and
     # any redeploy where HF auth is rate-limited or temporarily down).
@@ -67,7 +70,7 @@ def _load_tdms_index() -> Optional["TDMSIndex"]:
         except Exception as exc:
             print(f"Local TDMS files failed to load: {exc!r}. Falling back to HF.")
     try:
-        x_path = hf_hub_download(repo_id=REPO_ID, filename="X_tdms_long.npy", local_dir=data_dir)
+        x_path = hf_hub_download(repo_id=REPO_ID, filename="X_tdms_essfull_template.npy", local_dir=data_dir)
         y_path = hf_hub_download(repo_id=REPO_ID, filename="y_tdms.npy", local_dir=data_dir)
         return TDMSIndex(np.load(x_path), np.load(y_path), n_classes=len(CLASSES))
     except Exception as exc:
@@ -77,7 +80,7 @@ def _load_tdms_index() -> Optional["TDMSIndex"]:
 
 TDMS_INDEX = _load_tdms_index()
 if TDMS_INDEX is not None:
-    print(f"TDMS index loaded — {len(TDMS_INDEX.X)} templates")
+    print(f"TDMS index loaded — {len(TDMS_INDEX.X)} Essentia templates")
 
 # Multi-segment threshold: videos/clips longer than this get sampled in three
 # 90s windows and averaged, matching how the YouTube pipeline already works.
@@ -205,10 +208,12 @@ async def predict_raga_tdms(
     file: UploadFile = File(...),
     tonic_hz: Optional[float] = Form(None),
 ):
-    """Phase 10b TDMS k-NN inference. Three-window-averaged TDMS query
-    against a 480-template index. Slower than /predict (3x pyin passes)
-    but research-validated at 73.23% top-1 / 95.31% top-5 vs v1's 8.32% /
-    28.57% on the same evaluation."""
+    """Phase 13 TDMS k-NN inference with Essentia expert extractors.
+    Detects the tonic once via TonicIndianArtMusic, averages Melodia-pitch
+    TDMSs from up to 7 windows, and does 1-NN (symmetric KL) against the
+    full-recording template index. Validated 75.62% top-1 / 91.17% top-5
+    on the 480-recording CMD set (7x90s queries) vs v1's 8.32% / 28.57%.
+    Short uploads sample fewer independent windows and land closer to 70%."""
     if TDMS_INDEX is None:
         raise HTTPException(503, "TDMS index not loaded")
 
@@ -223,7 +228,7 @@ async def predict_raga_tdms(
 
     override = tonic_hz if tonic_hz and tonic_hz > 0 else None
     try:
-        probs, used_tonic = predict_top_k(TDMS_INDEX, tmp_path, tonic_override=override)
+        probs, used_tonic = predict_essentia.predict_top_k(TDMS_INDEX, tmp_path, tonic_override=override)
         return _format_response(probs, used_tonic, tonic_overridden=override is not None)
     except ValueError as e:
         raise HTTPException(422, str(e))

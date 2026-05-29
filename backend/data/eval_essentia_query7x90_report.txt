@@ -1,0 +1,15 @@
+==============================================================================
+Phase 13 query-density push: full-rec Melodia templates + 7x90s queries
+Queries: 7x90s evenly spaced, 1 shared Essentia tonic (180s)
+Recordings: 480/480
+==============================================================================
+
+  7x90s query                   top1 75.62% +/- 0.81   top5 91.17% +/- 0.21
+
+Comparison ladder:
+  Phase 1   expert .pitch + expert tonic    top1 85.67%   top5 97.58%
+  THIS      Melodia full + 7x90s query       top1 75.62%   top5 91.17%
+  Phase 13d Melodia full + 5x60s query      top1 73.62%   top5 91.21%
+  Phase 13c Melodia full + 3x60s query      top1 70.00%   top5 86.58%
+  Phase 12d pyin + sa_pa tonic              top1 42.25%   top5 70.42%
+  v1 deployed                               top1  8.32%   top5 28.57%

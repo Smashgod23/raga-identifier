@@ -1,0 +1,14 @@
+==============================================================================
+Phase 13c: full-recording Melodia templates + shared Essentia tonic
+Templates: Melodia FULL + EXPERT tonic   Queries: Melodia 3x60s + 1 Essentia tonic (120s)
+Recordings: 480/480
+==============================================================================
+
+  Phase 13c (Essentia full-rec)  top1 70.00% +/- 0.59   top5 86.58% +/- 0.28
+
+Comparison ladder:
+  Phase 1   expert .pitch + expert tonic    top1 85.67%   top5 97.58%
+  Phase 13c Melodia full + Essentia tonic   top1 70.00%   top5 86.58%
+  Phase 13b Melodia 5min + Essentia tonic   top1 62.29%   top5 86.92%
+  Phase 12d pyin + sa_pa tonic              top1 42.25%   top5 70.42%
+  v1 deployed                               top1  8.32%   top5 28.57%

@@ -3,8 +3,11 @@ backend/data/RagaDataset/
 backend/data/ragas/
 backend/data/*.wav
 backend/data/*.npy
-# Phase 10b production templates: ship in-repo for now until HF Hub upload lands.
-# Re-ignore them once they live on HF.
+# Production template index shipped in-repo so HF Spaces gets it at build
+# time without an HF Hub upload. Phase 13 uses the Essentia full-recording
+# templates; X_tdms_long.npy (Phase 10b pyin templates) is kept tracked for
+# history but no longer loaded. Move to HF Hub later and re-ignore.
+!backend/data/X_tdms_essfull_template.npy
 !backend/data/X_tdms_long.npy
 !backend/data/y_tdms.npy
 backend/data/audio_clips_meta.json

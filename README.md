@@ -739,17 +739,46 @@ More candidates raises the *reachable* ceiling enormously, but the old peakednes
 
 The tonic gain translated to **+5.46 pp top-1 / +5.91 pp top-5** end-to-end. The `/predict-tdms` endpoint now serves ~41% top-1 / ~70% top-5 — 5× v1's deployed top-1 — and the same `_detect_tonic` improvement flows into the v1 `/predict` endpoint too. This shipped in `predict.py`.
 
-### What's left after Phase 12
+### Phase 13 — Run the expert extractors at inference (75.62%, the breakthrough)
 
-Open levers in expected-value order:
+Through Phase 12 I'd concluded the deployable pipeline was capped near the pyin pitch ceiling (73.23% with a perfect tonic) and that 75% was at the real-audio frontier. That conclusion was wrong, and the reason it was wrong is instructive: I had been *reimplementing* pitch and tonic detection by hand (pyin, the sa_pa drone scorer) instead of running the **actual expert algorithms** the dataset was built with.
 
-1. **Retrain the tonic re-ranker on top of sa_pa candidates.** The ceiling at K=10 is 83.5%; sa_pa reaches 65%. A learned scorer trained on production-offset candidates (Phase 11b's failure was offset mismatch, not a dead end) could close part of the remaining 18 pp tonic gap, which is worth ~10-15 pp raga top-1 by the Phase 10b/11a slope.
-2. **CREPE on the long templates.** Phase 9b: +5.7 pp top-1 vs pyin with expert tonic; templates are offline so CREPE's slowness doesn't hurt at inference.
-3. **Move tonic detection out of the per-window loop / vote across windows.** The three query windows each detect their own tonic; a per-recording vote would cut variance.
-4. **Full-recording templates instead of 5 min.** Linear extension of the Phase 10a result — probably +2-4 pp top-1.
-5. **DeepSRGM-style bi-LSTM on tonic-normalized pitch contours.** ISMIR 2019 reports 88.1%. The move if the above leave the pipeline short of the ceiling.
+The CompMusic `.pitch` files were extracted with **Melodia (Salamon-Gómez predominant melody)** and the `.tonicFine` tonics with **Gulati's multipitch method**. Both ship in [Essentia](https://essentia.upf.edu/) as `PredominantPitchMelodia` and `TonicIndianArtMusic`. There is no reason they can only run offline — they run on arbitrary uploaded audio in real time. Running them at inference closes the pitch *and* tonic gaps that pyin/sa_pa could not.
 
-What's explicitly NOT a good lever based on Phase 4-12 evidence: bigger from-scratch CNNs, general-audio foundation model embeddings, data augmentation on the existing 689 recordings, or any octave-fold change. All tried and ruled out for principled reasons documented above.
+**Tonic, validated first (`backend/src/eval_essentia_tonic.py`).** TonicIndianArtMusic on a 60s window, octave-agnostic vs `.tonicFine`:
+
+| Tonic detector | Top-1 |
+|---|---|
+| peakedness (old prod) | 51.9% |
+| sa_pa exact, K=15 (Phase 12d) | 70.2% |
+| **Essentia TonicIndianArtMusic** | **85.4%** |
+
+85.4% on 480 recordings, zero failures — +15 pp over the best thing I built by hand, matching the ~85-90% the literature reports.
+
+**Full pipeline, swept to the target (`eval_essentia_pipeline.py`, `eval_essentia_full.py`, `eval_essentia_5win.py`).** Melodia pitch on both sides (templates and queries share an extractor — Phase 8 proved cross-extractor mismatch is fatal), expert `.tonicFine` for the offline templates, Essentia tonic at query time:
+
+| Config | Top-1 | Top-5 |
+|---|---|---|
+| Melodia 5-min templates + 3×60s queries (Phase 13b) | 62.29% | 86.92% |
+| Melodia full-recording templates + 3×60s queries (13c) | 70.00% | 86.58% |
+| full templates + 5×60s queries (13d) | 73.62% | 91.21% |
+| **full templates + 7×90s queries (13e, shipped)** | **75.62%** | **91.17%** |
+| expert `.pitch` + expert tonic ceiling (Phase 1) | 85.67% | 97.58% |
+
+**75.62% top-1 / 91.17% top-5** clears the 75% target — 9× v1's actual deployed top-1 (8.32%), and within 10 pp of the absolute expert-feature ceiling. The two production levers that mattered: the expert extractors (Melodia + Gulati tonic), and query density (more/longer windows averaged before the 1-NN).
+
+**Honest caveat on the 75.62%.** It uses 7×90s = 630s of query audio, so it holds for full-concert-length input (a YouTube link, a 10-minute recording). A short 2-3 minute upload can only supply a few independent windows and lands closer to the 70% (3-window) number. Still far above v1 at any input length. The `compute_query_tdms` path degrades gracefully — short clips just use fewer windows.
+
+**Shipped (`backend/src/predict_essentia.py`).** `/predict-tdms` now runs the Essentia path: one TonicIndianArtMusic detection on a 180s middle window, Melodia-pitch TDMS from up to seven 90s windows averaged, 1-NN symmetric KL against the full-recording template index (`X_tdms_essfull_template.npy`, built offline with Melodia + expert tonic). `essentia==2.1b6.dev1389` added to `requirements-deploy.txt`; it has a `manylinux2014_x86_64` cp311 wheel so the HF Spaces Docker build installs it cleanly. End-to-end module test: ~18s per full recording, correct top-1 on the spot-check.
+
+### What's left after Phase 13
+
+1. **Point the frontend at `/predict-tdms`.** The live frontend still calls v1 `/predict` (~8% real-audio top-1). Switching the frontend's API path to `/predict-tdms` is the single highest-impact remaining change — it puts the 70-75% model in front of users. Verify the endpoint on HF Spaces first.
+2. **Build templates with Essentia tonic too** (currently expert `.tonicFine`). Would let the template index regenerate fully from audio with no dataset labels — useful when expanding beyond the 40 CMD ragas.
+3. **DeepSRGM-style bi-LSTM** on Melodia contours. ISMIR 2019 reports 88.1%; now that pitch/tonic are expert-grade, a learned sequence model is the path toward the 85%+ ceiling.
+4. **More ragas.** The 40-raga CMD set is the current universe; expanding needs new template audio + tonics (Essentia tonic makes this cheap).
+
+What's explicitly NOT a good lever based on Phase 4-13 evidence: bigger from-scratch CNNs, general-audio foundation model embeddings, data augmentation on the 689 recordings, octave-fold changes, or hand-reimplementing pitch/tonic detection when Essentia's expert algorithms run fine at inference.
 
 ---
 
@@ -768,19 +797,18 @@ The honest accuracy story, ordered from the most generous evaluation protocol to
 |---|---|---|
 | v1, leaky random 80/20 split (the original "84.4%") | 84.4% | — |
 | v1 baseline (MLP on expert 360-D PCD, 5-fold CV) | 71.79% | 94.25% |
+| TDMS k-NN sym KL (expert pitch + tonic, leave-one-out) — paper ceiling | 86.67% | 97.71% |
 | TDMS k-NN sym KL (expert pitch + tonic, 5-fold CV) | 85.67% | 97.58% |
-| TDMS k-NN sym KL (expert pitch + tonic, leave-one-out) — paper match | 86.67% | 97.71% |
-| TDMS k-NN sym KL (pyin + expert tonic, 5-min template + 3 × 60s averaged query) | 73.23% | 95.31% |
-| TDMS k-NN sym KL (pyin + expert tonic, 5-min template + 60s query) | 55.10% | 88.74% |
-| TDMS k-NN sym KL (CREPE + expert tonic, 60s clip) | 51.51% | 87.36% |
-| TDMS k-NN sym KL (pyin + expert tonic, 60s clip) | 45.81% | 82.93% |
-| TDMS k-NN sym KL (pyin + heuristic tonic, 60s clip) | 37.36% | 67.91% |
-| **TDMS k-NN sym KL (pyin + sa_pa tonic K=10, 5-min template + 3 × 60s averaged query — `/predict-tdms` production)** | **41.29%** | **69.58%** |
-| TDMS k-NN sym KL (pyin + peakedness tonic K=5, 5-min template + 3 × 60s averaged query — Phase 11a) | 35.83% | 63.67% |
-| TDMS k-NN sym KL (pyin + re-ranker tonic, 5-min template + 3 × 60s averaged query — Phase 11b: regression) | 34.08% | 61.25% |
+| **TDMS k-NN (Essentia Melodia + Gulati tonic, full templates + 7×90s queries — `/predict-tdms` production, Phase 13)** | **75.62%** | **91.17%** |
+| TDMS k-NN (Essentia, full templates + 5×60s queries) | 73.62% | 91.21% |
+| TDMS k-NN (Essentia, 5-min templates + 3×60s queries) | 62.29% | 86.92% |
+| TDMS k-NN (pyin + sa_pa tonic, 5-min template + 3×60s — Phase 12) | 42.25% | 70.42% |
+| TDMS k-NN (pyin + peakedness tonic, 5-min + 3×60s — Phase 11a) | 35.83% | 63.67% |
 | v1 deployed pipeline (pyin + heuristic tonic, 60s clip — `/predict`) | 8.32% | 28.57% |
 
-The model performs best on ragas with very distinctive swara sets. On real recordings, Todi came in at 97.9% confidence, Kalyani at 97.3%, and Shankarabharanam at 97.6% (from the middle of an MS Subbulakshmi recording) — though those confidence numbers come from the model that's actually only ~8% accurate on top-1 in benchmark, so they should be read as "what the model thinks" rather than "how often the model is right." The hardest cases at the research-evaluation level (expert features) are pentatonic ragas that share many swaras, like Mohanam and Bilahari, where the difference lies in specific ornamental patterns rather than the swara set alone. At the deployment level (pyin features), basically every prediction is hard.
+(All non-ceiling rows are real-audio deployable pipelines on the 480-recording CMD set under 5-fold recording-aware CV — no expert annotations at query time. The 86.67%/85.67% rows use expert `.pitch`+`.tonicFine` and are the unreachable ceiling, shown for reference. The 75.62% production row uses 7×90s queries, so it reflects full-concert-length input; short uploads land nearer 70%.)
+
+Two models exist side by side. The original v1 (`/predict`) is ~8% top-1 on real audio — its confidence scores read as "what the model thinks," not "how often it's right." The Phase 13 Essentia model (`/predict-tdms`) is 75.62% top-1 / 91.17% top-5 on full-length input and is the one worth using. The hardest cases for both, even with expert features, are allied ragas that share a swara set and differ only in gait/phrasing (Kāṁbhōji/Harikāmbhōji, Mōhanaṁ/Bilahari) — exactly what the TDMS feature's phrase-order encoding was built to separate.
 
 ---
 
@@ -795,7 +823,7 @@ Every time someone uses the app and submits feedback, the following data is stor
 
 When enough feedback accumulates (target: 50+ corrections per raga), I plan to download the corrected audio files, extract features from them, add them to the training set, and retrain the model. This creates a loop where real-world usage directly improves the model over time.
 
-The original v1 sklearn model is archived on Hugging Face as `raga_sklearn_v1_84pct.pkl` (the filename reflects the original leaky-split number, not the honest 71.79% from Phase 6) so any retrained model can be A/B'd against it and reverted if it regresses. The current production endpoint also still loads the same v1 pickle — none of the Phase 6-9 work has been deployed yet.
+The original v1 sklearn model is archived on Hugging Face as `raga_sklearn_v1_84pct.pkl` (the filename reflects the original leaky-split number, not the honest 71.79% from Phase 6). The `/predict` endpoint still loads it. The Phase 13 Essentia TDMS model ships on the `/predict-tdms` endpoint; the remaining step to put 75% in front of users is pointing the frontend's API path at `/predict-tdms` (the frontend currently calls `/predict`).
 
 ---
 

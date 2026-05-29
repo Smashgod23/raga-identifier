@@ -10,3 +10,4 @@ huggingface_hub==0.23.0
 supabase==2.28.2
 python-dotenv==1.2.2
 yt-dlp==2026.3.17
+essentia==2.1b6.dev1389

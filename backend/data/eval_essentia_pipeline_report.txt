@@ -1,0 +1,13 @@
+==============================================================================
+Phase 13b: full Essentia pipeline (Melodia pitch + Gulati tonic)
+Templates: Melodia 5-min + EXPERT tonic   Queries: Melodia 3x60s + ESSENTIA tonic
+Recordings: 480/480
+==============================================================================
+
+  Phase 13b (Essentia full)     top1 62.29% +/- 0.65   top5 86.92% +/- 0.42
+
+Comparison ladder:
+  Phase 1   expert .pitch + expert tonic   top1 85.67%   top5 97.58%
+  Phase 13b Melodia + Essentia tonic       top1 62.29%   top5 86.92%
+  Phase 12d pyin + sa_pa tonic             top1 42.25%   top5 70.42%
+  v1 deployed                              top1  8.32%   top5 28.57%

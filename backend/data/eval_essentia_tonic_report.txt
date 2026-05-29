@@ -1,0 +1,14 @@
+======================================================================
+Phase 13: Essentia TonicIndianArtMusic tonic accuracy
+60s middle window, octave-agnostic +/-25 cents, 480 recordings (0 errors)
+======================================================================
+
+  Essentia TonicIndianArtMusic   85.4%  (410/480)
+
+Comparison (same 480-recording set, octave-agnostic top-1):
+  Essentia tonic (this)          85.4%
+  sa_pa exact, K=15 (shipped)    70.2%
+  peakedness, K=5 (old prod)     51.9%
+
+If Essentia tonic >> 70%, it replaces sa_pa as the tonic detector.
+Next: full pipeline with Essentia Melodia pitch + Essentia tonic.
