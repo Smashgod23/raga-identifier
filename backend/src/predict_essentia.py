@@ -43,6 +43,11 @@ TONIC_WINDOW_S = 180.0
 N_WINDOWS = 7
 WINDOW_S = 90.0
 MIN_AUDIO_S = 5.0
+# Cap how much of a long upload we decode into RAM. 20 min is far more than
+# the 7x90s=630s the windows can use, and bounds peak memory at ~212 MB
+# (44.1kHz float32) for a pathologically long file. Median CMD recording is
+# 9.75 min, so this is a no-op for essentially all real input.
+MAX_ANALYZE_S = 1200.0
 
 
 def _melodia_tdms(audio: np.ndarray, tonic_hz: float):
@@ -71,18 +76,45 @@ def detect_tonic(audio: np.ndarray, tonic_override: float | None = None) -> floa
         chunk = audio[mid - win // 2: mid + win // 2]
     else:
         chunk = audio
+    if len(chunk) < MIN_AUDIO_S * SR:
+        return 0.0
     return float(es.TonicIndianArtMusic()(chunk))
 
 
 def compute_query_tdms(audio_path: str, *, tonic_override: float | None = None):
-    """Load audio, detect tonic once, average N-window Melodia TDMSs.
+    """Detect tonic once, average up to N_WINDOWS Melodia-pitch TDMSs.
 
-    Returns (tdms_vector float32 (14400,), tonic_hz). Raises ValueError if
-    no usable window can be extracted.
+    Loads at most MAX_ANALYZE_S of audio in a single decode (one EasyLoader
+    call capped to startTime=0..min(total, MAX_ANALYZE_S)) then slices in
+    memory. This keeps a typical upload fast (one decode) while bounding peak
+    RAM for a pathologically long file — at 44.1 kHz float32, the 20-minute
+    cap is ~212 MB regardless of how long the upload actually is.
+
+    Returns (tdms_vector float32 (14400,), tonic_hz). Raises ValueError if no
+    usable window can be extracted.
     """
+    import librosa
     import essentia.standard as es
 
-    audio = es.MonoLoader(filename=audio_path, sampleRate=SR)()
+    try:
+        total_s = float(librosa.get_duration(path=audio_path))
+    except Exception as exc:
+        raise ValueError(f"could not read audio: {exc}") from exc
+    if total_s < MIN_AUDIO_S:
+        raise ValueError("audio too short for raga detection (need >= 5s)")
+
+    load_s = min(total_s, MAX_ANALYZE_S)
+    audio = es.EasyLoader(filename=audio_path, sampleRate=SR, startTime=0.0, endTime=load_s)()
+    return query_tdms_from_audio(audio, tonic_override=tonic_override)
+
+
+def query_tdms_from_audio(audio: np.ndarray, *, tonic_override: float | None = None):
+    """Core query path on an in-memory audio array at SR.
+
+    Shared by compute_query_tdms (production) and the length-curve eval so
+    both measure identical logic. Detects tonic once, averages up to
+    N_WINDOWS Melodia-pitch TDMSs. Returns (tdms float32 (14400,), tonic_hz).
+    """
     total = len(audio)
     if total < MIN_AUDIO_S * SR:
         raise ValueError("audio too short for raga detection (need >= 5s)")

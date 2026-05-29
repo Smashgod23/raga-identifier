@@ -1,0 +1,20 @@
+========================================================================
+Phase 13f: accuracy vs simulated upload length (production query path)
+Templates: full-recording Melodia + expert tonic. Query: middle L seconds.
+========================================================================
+
+  upload length    top-1      top-5      usable  
+  ---------------- ---------- ---------- --------
+    30s (0m30s)      33.5%      68.1%     478/480
+    60s (1m00s)      51.1%      79.4%     478/480
+    90s (1m30s)      58.5%      82.2%     479/480
+   120s (2m00s)      64.3%      86.1%     479/480
+   180s (3m00s)      69.4%      89.6%     479/480
+   300s (5m00s)      72.3%      90.5%     480/480
+
+Reference (7x90s = 630s of query audio): top1 75.62%  top5 91.17%
+v1 deployed: top1 8.32%  top5 28.57%
+
+This is what a user gets for a single clip of the given length, using
+the exact /predict-tdms query path. Short clips use one window; the
+curve shows how accuracy grows with more audio.

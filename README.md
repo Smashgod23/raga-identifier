@@ -767,7 +767,19 @@ The CompMusic `.pitch` files were extracted with **Melodia (Salamon-Gómez predo
 
 **75.62% top-1 / 91.17% top-5** clears the 75% target — 9× v1's actual deployed top-1 (8.32%), and within 10 pp of the absolute expert-feature ceiling. The two production levers that mattered: the expert extractors (Melodia + Gulati tonic), and query density (more/longer windows averaged before the 1-NN).
 
-**Honest caveat on the 75.62%.** It uses 7×90s = 630s of query audio, so it holds for full-concert-length input (a YouTube link, a 10-minute recording). A short 2-3 minute upload can only supply a few independent windows and lands closer to the 70% (3-window) number. Still far above v1 at any input length. The `compute_query_tdms` path degrades gracefully — short clips just use fewer windows.
+**Accuracy vs upload length (the honest short-clip number).** The 75.62% uses 7×90s = 630s of query audio, so it reflects full-concert-length input. Real uploads are shorter. `backend/src/eval_essentia_lengthcurve.py` measures exactly what a user gets for a clip of length L, simulating an L-second upload through the production query path (`predict_essentia.query_tdms_from_audio` — same tonic detection, windowing, and averaging the deployed endpoint runs):
+
+| Upload length | Top-1 | Top-5 |
+|---|---|---|
+| 30s | 33.5% | 68.1% |
+| 1 min | 51.1% | 79.4% |
+| 1.5 min | 58.5% | 82.2% |
+| 2 min | 64.3% | 86.1% |
+| 3 min | 69.4% | 89.6% |
+| 5 min | 72.3% | 90.5% |
+| ~10 min (7×90s) | 75.62% | 91.17% |
+
+Accuracy scales steeply with how much audio the model gets — a single 30s window is sparse, and the TDMS only becomes statistically reliable with minutes of pitch data. The practical guidance: **the app should ask for at least 2-3 minutes** (64-69% top-1, ~86-90% top-5), and the 75% headline requires a full performance. Top-5 is usable even at a minute (79%), which is what makes the "did you mean? here are five" UX viable for short clips. The query path degrades gracefully — a clip under 90s just uses one window rather than erroring, and very long uploads are capped at a 20-minute single decode (`MAX_ANALYZE_S`) so memory stays bounded (~212 MB) regardless of file length.
 
 **Shipped (`backend/src/predict_essentia.py`).** `/predict-tdms` now runs the Essentia path: one TonicIndianArtMusic detection on a 180s middle window, Melodia-pitch TDMS from up to seven 90s windows averaged, 1-NN symmetric KL against the full-recording template index (`X_tdms_essfull_template.npy`, built offline with Melodia + expert tonic). `essentia==2.1b6.dev1389` added to `requirements-deploy.txt`; it has a `manylinux2014_x86_64` cp311 wheel so the HF Spaces Docker build installs it cleanly. End-to-end module test: ~18s per full recording, correct top-1 on the spot-check.
 
