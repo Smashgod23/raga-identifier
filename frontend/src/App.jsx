@@ -174,13 +174,21 @@ export default function App() {
     try {
       const ytBody = { url: youtubeUrl }
       if (tonicHz) ytBody.tonic_hz = parseFloat(tonicHz)
-      const res = await axios.post(`${API_URL}/predict-youtube`, ytBody)
+      // Fetching + analyzing a few 90s windows finishes well inside two minutes;
+      // cap the request so a stalled upstream fails the UI instead of spinning forever.
+      const res = await axios.post(`${API_URL}/predict-youtube`, ytBody, { timeout: 240000 })
       setPredictions(res.data)
       setAudioId(res.data.audio_id || '')
       setState('result')
       setFeedback(null)
     } catch (e) {
-      setError(e.response?.data?.detail || 'Could not process YouTube link.')
+      const timedOut = e.code === 'ECONNABORTED' || !e.response
+      setError(
+        e.response?.data?.detail ||
+          (timedOut
+            ? 'That took too long to fetch from YouTube. Try a shorter video, or upload the audio file directly.'
+            : 'Could not process YouTube link.')
+      )
       setState('idle')
     } finally {
       stopProcessing()

@@ -236,6 +236,79 @@ async def predict_raga_tdms(
         os.unlink(tmp_path)
 
 
+# --- YouTube extraction helpers ------------------------------------------------
+# This backend runs on a datacenter IP (HF Space), which YouTube blocks for
+# yt-dlp unless its JS signature/n-token challenges are solved. We solve them
+# two ways, in order of strength: (1) the EJS challenge solver, which needs the
+# Deno runtime baked into the Docker image, and (2) an optional cookie jar from
+# a logged-in account, supplied via the YT_COOKIES secret. Either alone unblocks
+# most videos; together they are the most reliable combination on a cloud IP.
+
+YT_DLP_CACHE = os.path.join(BASE_DIR, ".cache", "yt-dlp")
+
+
+def _materialize_cookies() -> Optional[str]:
+    """Write the YT_COOKIES secret (Netscape cookie-file format) to a private
+    temp file once at startup and return its path, or None if unset. yt-dlp
+    needs cookies as a file, not an env var. Failures degrade to no-cookies
+    rather than taking the endpoint down."""
+    raw = os.getenv("YT_COOKIES", "").strip()
+    if not raw:
+        return None
+    try:
+        fd, path = tempfile.mkstemp(prefix="yt_cookies_", suffix=".txt")
+        with os.fdopen(fd, "w") as f:
+            # yt-dlp rejects cookie files without the Netscape header line, so
+            # add it for users who paste only the cookie rows.
+            if not raw.lstrip().startswith("#"):
+                f.write("# Netscape HTTP Cookie File\n")
+            f.write(raw + "\n")
+        os.chmod(path, 0o600)
+        print("YouTube cookies loaded from YT_COOKIES secret.")
+        return path
+    except Exception as exc:
+        print(f"Could not write YT_COOKIES cookie file: {exc!r}. Continuing without cookies.")
+        return None
+
+
+YT_COOKIE_FILE = _materialize_cookies()
+
+
+def _ytdlp_base(strat: list) -> list:
+    """Base yt-dlp argv shared by every call: EJS challenge solving, a writable
+    cache dir, optional cookies, and the per-attempt extractor strategy."""
+    args = [
+        "yt-dlp", "--no-playlist",
+        "--remote-components", "ejs:github",
+        "--cache-dir", YT_DLP_CACHE,
+    ]
+    if YT_COOKIE_FILE:
+        args += ["--cookies", YT_COOKIE_FILE]
+    return args + strat
+
+
+def _youtube_error_detail(stderr: str) -> str:
+    """Classify a raw yt-dlp stderr into a user-facing 422 message so the UI can
+    say something useful instead of a generic failure. The truncated stderr is
+    appended for debugging."""
+    s = (stderr or "").lower()
+    if "sign in to confirm" in s or "not a bot" in s or "confirm you" in s:
+        msg = ("YouTube is blocking this server with a bot check right now. "
+               "Try a different video, or upload the audio file directly.")
+    elif "private video" in s or "members-only" in s or "join this channel" in s:
+        msg = "This video is private or members-only, so its audio can't be fetched."
+    elif "video unavailable" in s or "removed" in s or "is not available" in s or "age" in s:
+        msg = "This video is unavailable (removed, region-locked, or age-restricted). Try another."
+    elif "timed out" in s or "timeout" in s:
+        msg = ("Fetching this video took too long and timed out. Try a shorter "
+               "video, or upload the audio file directly.")
+    else:
+        msg = "Could not extract audio from this video. Try uploading the audio file directly."
+    if stderr:
+        msg += f" (yt-dlp: {stderr.strip()[-300:]})"
+    return msg
+
+
 class YouTubeRequest(BaseModel):
     url: str
     tonic_hz: Optional[float] = None
@@ -252,34 +325,52 @@ async def predict_youtube(request: YouTubeRequest):
 
     override = request.tonic_hz if request.tonic_hz and request.tonic_hz > 0 else None
 
-    # YouTube has been ramping up bot detection against cloud-IP yt-dlp calls
-    # over 2025-2026. Specifying alternative player clients (mweb/ios) bypasses
-    # most "Sign in to confirm you're not a bot" rejections that ship through
-    # the default web client. Three strategies tried in order; all are no-ops
-    # for videos that work on the default client. The last attempt's stderr
-    # is surfaced in the 422 response so the failure mode is debuggable.
+    # Extractor strategies tried in order until one returns metadata. With the
+    # EJS challenge solver enabled (and Deno in the image), the default web
+    # client handles most videos; the alternative player clients are fallbacks
+    # for the occasional video that rejects it. We lock onto the FIRST strategy
+    # that works during the duration probe and reuse it for every segment
+    # download, so a failing video bails out in well under two minutes instead
+    # of grinding through every client x every segment (the old design could
+    # hang for ~18 minutes before giving up).
     EXTRACTOR_STRATEGIES = [
-        ["--extractor-args", "youtube:player_client=mweb,ios,web"],
-        ["--extractor-args", "youtube:player_client=ios"],
-        [],  # plain (default)
+        [],  # default (web) — EJS solves its JS challenges
+        ["--extractor-args", "youtube:player_client=tv"],
+        ["--extractor-args", "youtube:player_client=android_vr"],
     ]
     last_stderr = ""
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Probe duration with whichever strategy works first.
+        # Probe duration, locking onto the first strategy that returns it. The
+        # very first probe after a cold start also downloads + caches the EJS
+        # components, so the 40s budget is deliberately generous.
         duration = 0
+        working_strat = None
         for strat in EXTRACTOR_STRATEGIES:
             try:
                 dur_result = subprocess.run(
-                    ["yt-dlp", "--no-playlist", "--print", "duration", *strat, url],
-                    capture_output=True, text=True, timeout=30,
+                    _ytdlp_base(strat) + ["--print", "duration", url],
+                    capture_output=True, text=True, timeout=40,
                 )
-                if dur_result.returncode == 0 and dur_result.stdout.strip():
-                    duration = int(dur_result.stdout.strip())
-                    break
-                last_stderr = (dur_result.stderr or "")[-400:]
-            except (subprocess.TimeoutExpired, ValueError):
+            except subprocess.TimeoutExpired:
+                last_stderr = "yt-dlp metadata probe timed out (40s)"
                 continue
+            out_lines = (dur_result.stdout or "").strip().splitlines()
+            if dur_result.returncode == 0 and out_lines:
+                try:
+                    # yt-dlp prints duration as a float; take the last line in
+                    # case warnings leaked onto stdout.
+                    duration = int(float(out_lines[-1]))
+                    working_strat = strat
+                    break
+                except ValueError:
+                    pass
+            last_stderr = (dur_result.stderr or "")[-500:]
+
+        # No strategy could even read the video's metadata -> fail fast with a
+        # classified message instead of attempting doomed downloads.
+        if working_strat is None:
+            raise HTTPException(422, _youtube_error_detail(last_stderr))
 
         if duration > LONG_CLIP_THRESHOLD:
             quarter = duration // 4
@@ -298,29 +389,22 @@ async def predict_youtube(request: YouTubeRequest):
             os.makedirs(seg_dir, exist_ok=True)
             output_template = os.path.join(seg_dir, "audio.%(ext)s")
 
-            download_ok = False
-            for strat in EXTRACTOR_STRATEGIES:
-                dl_args = [
-                    "yt-dlp", "--no-playlist",
-                    "-x", "--audio-format", "wav",
-                    "-o", output_template,
-                    *strat,
-                ]
-                if seg is not None:
-                    dl_args += ["--download-sections", f"*{seg[0]}-{seg[1]}"]
-                dl_args.append(url)
+            # Reuse the strategy that won the probe — no per-segment client loop.
+            dl_args = _ytdlp_base(working_strat) + [
+                "-x", "--audio-format", "wav",
+                "-o", output_template,
+            ]
+            if seg is not None:
+                dl_args += ["--download-sections", f"*{seg[0]}-{seg[1]}"]
+            dl_args.append(url)
 
-                try:
-                    result = subprocess.run(dl_args, capture_output=True, text=True, timeout=120)
-                except subprocess.TimeoutExpired:
-                    last_stderr = "yt-dlp timed out (120s)"
-                    continue
-                if result.returncode == 0:
-                    download_ok = True
-                    break
-                last_stderr = (result.stderr or "")[-400:]
-
-            if not download_ok:
+            try:
+                result = subprocess.run(dl_args, capture_output=True, text=True, timeout=90)
+            except subprocess.TimeoutExpired:
+                last_stderr = "yt-dlp download timed out (90s)"
+                continue
+            if result.returncode != 0:
+                last_stderr = (result.stderr or "")[-500:]
                 continue
 
             wav_files = globmod.glob(os.path.join(seg_dir, "audio.*"))
@@ -336,17 +420,13 @@ async def predict_youtube(request: YouTubeRequest):
                 if anchor_tonic is None:
                     anchor_tonic = tonic
                 all_probs.append(MODEL.predict_proba(SCALER.transform([features]))[0])
-            except (ValueError, Exception):
+            except Exception:
                 continue
 
         if not all_probs:
-            # Surface the underlying yt-dlp failure so we can tell whether it
-            # is a bot-detection block, an age/region gate, a stale extractor,
-            # or just a bad URL. Truncated to last 400 chars.
-            detail = "Could not extract audio from this video."
-            if last_stderr:
-                detail += f" yt-dlp said: {last_stderr.strip()}"
-            raise HTTPException(422, detail)
+            # Metadata read but every download/feature pass failed. Surface the
+            # classified yt-dlp failure so the UI can guide the user.
+            raise HTTPException(422, _youtube_error_detail(last_stderr))
 
         avg_probs = np.mean(all_probs, axis=0)
         used_tonic = override if override is not None else anchor_tonic
