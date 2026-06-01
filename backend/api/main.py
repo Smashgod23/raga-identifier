@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import tempfile, os, sys
+import tempfile, os, sys, atexit
+from urllib.parse import urlparse
 import numpy as np
 import pickle
 import json
@@ -247,6 +248,17 @@ async def predict_raga_tdms(
 YT_DLP_CACHE = os.path.join(BASE_DIR, ".cache", "yt-dlp")
 
 
+def _is_youtube_url(url: str) -> bool:
+    """True only if the URL's actual host is youtube.com/youtu.be (or a
+    subdomain like m./music.youtube.com). A substring check would wave through
+    things like https://evil.com/?x=youtube.com, so parse the host instead."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in ("youtube.com", "youtu.be") or host.endswith(".youtube.com")
+
+
 def _materialize_cookies() -> Optional[str]:
     """Write the YT_COOKIES secret (Netscape cookie-file format) to a private
     temp file once at startup and return its path, or None if unset. yt-dlp
@@ -264,6 +276,8 @@ def _materialize_cookies() -> Optional[str]:
                 f.write("# Netscape HTTP Cookie File\n")
             f.write(raw + "\n")
         os.chmod(path, 0o600)
+        # Best-effort cleanup so the cookie jar doesn't linger on a long-lived host.
+        atexit.register(lambda: os.path.exists(path) and os.unlink(path))
         print("YouTube cookies loaded from YT_COOKIES secret.")
         return path
     except Exception as exc:
@@ -292,12 +306,16 @@ def _youtube_error_detail(stderr: str) -> str:
     say something useful instead of a generic failure. The truncated stderr is
     appended for debugging."""
     s = (stderr or "").lower()
-    if "sign in to confirm" in s or "not a bot" in s or "confirm you" in s:
+    # Match the bot-check phrasing specifically. YouTube's age gate is the very
+    # similar "Sign in to confirm your age", so a loose "sign in to confirm"
+    # match would misroute age-restricted videos to the bot-check message.
+    if "not a bot" in s or "sign in to confirm you're not a bot" in s:
         msg = ("YouTube is blocking this server with a bot check right now. "
                "Try a different video, or upload the audio file directly.")
     elif "private video" in s or "members-only" in s or "join this channel" in s:
         msg = "This video is private or members-only, so its audio can't be fetched."
-    elif "video unavailable" in s or "removed" in s or "is not available" in s or "age" in s:
+    elif ("video unavailable" in s or "removed" in s or "is not available" in s
+          or "age-restricted" in s or "confirm your age" in s or "inappropriate for some users" in s):
         msg = "This video is unavailable (removed, region-locked, or age-restricted). Try another."
     elif "timed out" in s or "timeout" in s:
         msg = ("Fetching this video took too long and timed out. Try a shorter "
@@ -320,7 +338,7 @@ async def predict_youtube(request: YouTubeRequest):
     import glob as globmod
 
     url = request.url
-    if not any(d in url for d in ['youtube.com', 'youtu.be']):
+    if not _is_youtube_url(url):
         raise HTTPException(400, "Please provide a valid YouTube URL")
 
     override = request.tonic_hz if request.tonic_hz and request.tonic_hz > 0 else None
