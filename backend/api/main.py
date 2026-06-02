@@ -340,6 +340,17 @@ def _youtube_error_detail(stderr: str) -> str:
     return msg
 
 
+def _looks_throttled(stderr: str) -> bool:
+    """True if the failure is an IP-level block (Google dropping the connection /
+    429), which kills every player client equally. When this is the cause there's
+    no point spending ~60s per remaining extractor strategy — bail and surface
+    the rate-limit message immediately."""
+    s = (stderr or "").lower()
+    return any(sig in s for sig in (
+        "unexpected_eof", "eof occurred", "ssl", "429", "too many requests",
+        "connection reset", "connection aborted", "read timed out", "handshake"))
+
+
 class YouTubeRequest(BaseModel):
     url: str
     tonic_hz: Optional[float] = None
@@ -392,12 +403,18 @@ def predict_youtube(request: YouTubeRequest):
             try:
                 result = subprocess.run(dl_args, capture_output=True, text=True, timeout=60)
             except subprocess.TimeoutExpired:
+                # A stalled download is the IP throttle; other clients won't help.
                 last_stderr = "yt-dlp download timed out (60s)"
-                continue
+                break
             if result.returncode == 0 and globmod.glob(os.path.join(tmpdir, "audio.*")):
                 download_ok = True
                 break
             last_stderr = (result.stderr or "")[-500:]
+            # IP-level block (SSL drop / 429) fails every client, so stop trying
+            # the rest instead of burning ~60s each. Per-video errors (private,
+            # unavailable) don't match this and still fall through to the next.
+            if _looks_throttled(last_stderr):
+                break
 
         if not download_ok:
             raise HTTPException(422, _youtube_error_detail(last_stderr))
