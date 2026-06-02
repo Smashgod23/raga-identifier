@@ -4,6 +4,27 @@ import ragaData from './ragas.json'
 
 const API_URL = 'https://smashgod23-raga-identifier-api.hf.space'
 
+// Render any URL inside an error/message string as a real clickable link
+// (e.g. the cobalt.tools downloader in the rate-limit message).
+const linkify = (text) =>
+  String(text)
+    .split(/(https?:\/\/[^\s]+)/g)
+    .map((part, i) =>
+      /^https?:\/\//.test(part) ? (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: 'inherit', textDecoration: 'underline', fontWeight: 600 }}
+        >
+          {part}
+        </a>
+      ) : (
+        part
+      )
+    )
+
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 const SA_OPTIONS = (() => {
   const opts = [{ label: 'Auto-detect', value: '' }]
@@ -431,7 +452,7 @@ export default function App() {
         </>
       )}
 
-      {error && <div style={styles.error}>{error}</div>}
+      {error && <div style={styles.error}>{linkify(error)}</div>}
 
       <div style={styles.about}>
         <div style={styles.aboutDivider} />

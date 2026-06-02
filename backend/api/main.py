@@ -321,9 +321,18 @@ def _youtube_error_detail(stderr: str) -> str:
     elif ("video unavailable" in s or "removed" in s or "is not available" in s
           or "age-restricted" in s or "confirm your age" in s or "inappropriate for some users" in s):
         msg = "This video is unavailable (removed, region-locked, or age-restricted). Try another."
-    elif "timed out" in s or "timeout" in s:
-        msg = ("Fetching this video took too long and timed out. Try a shorter "
-               "video, or upload the audio file directly.")
+    elif any(sig in s for sig in (
+            "unexpected_eof", "eof occurred", "ssl", "timed out", "timeout",
+            "429", "too many requests", "connection reset", "connection aborted",
+            "read timed out", "handshake", "rate limit", "rate-limit")):
+        # The shared datacenter IP got rate limited or had its download dropped
+        # mid-stream. This is the common transient failure, so keep the message
+        # clean (no raw SSL noise) and hand the user a concrete workaround.
+        return ("Too many YouTube requests hit this server in the last few "
+                "minutes, so YouTube is rate-limiting it. Wait about 3 to 5 "
+                "minutes and try the link again. To skip the wait, download the "
+                "audio from the video with a tool like https://cobalt.tools and "
+                "upload that file here with the Upload button.")
     else:
         msg = "Could not extract audio from this video. Try uploading the audio file directly."
     if stderr:
