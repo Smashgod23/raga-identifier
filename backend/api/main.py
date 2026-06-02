@@ -343,112 +343,59 @@ async def predict_youtube(request: YouTubeRequest):
 
     override = request.tonic_hz if request.tonic_hz and request.tonic_hz > 0 else None
 
-    # Extractor strategies tried in order until one returns metadata. With the
-    # EJS challenge solver enabled (and Deno in the image), the default web
-    # client handles most videos; the alternative player clients are fallbacks
-    # for the occasional video that rejects it. We lock onto the FIRST strategy
-    # that works during the duration probe and reuse it for every segment
-    # download, so a failing video bails out in well under two minutes instead
-    # of grinding through every client x every segment (the old design could
-    # hang for ~18 minutes before giving up).
+    # Extractor strategies tried in order until one downloads. With the EJS
+    # challenge solver enabled (and Deno in the image), the default web client
+    # handles most videos; the alternative player clients are fallbacks for the
+    # occasional video that rejects it.
     EXTRACTOR_STRATEGIES = [
         [],  # default (web) — EJS solves its JS challenges
         ["--extractor-args", "youtube:player_client=tv"],
         ["--extractor-args", "youtube:player_client=android_vr"],
     ]
+    # One fixed analysis window, no duration probe. Each yt-dlp call on a
+    # datacenter IP pays a steep EJS-solve + throttle cost, so the old "probe
+    # duration, then download three 90s segments" flow meant four round-trips
+    # and ~4-5 minutes per request (over the frontend timeout) plus heavy
+    # throttling. A single SEGMENT_LEN window from the start of the video is one
+    # round-trip — fast enough for the UI and far less likely to get rate
+    # limited. File upload still does full multi-segment averaging for accuracy.
     last_stderr = ""
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Probe duration, locking onto the first strategy that returns it. The
-        # very first probe after a cold start also downloads + caches the EJS
-        # components, so the 40s budget is deliberately generous.
-        duration = 0
-        working_strat = None
+        output_template = os.path.join(tmpdir, "audio.%(ext)s")
+        download_ok = False
         for strat in EXTRACTOR_STRATEGIES:
-            try:
-                dur_result = subprocess.run(
-                    _ytdlp_base(strat) + ["--print", "duration", url],
-                    capture_output=True, text=True, timeout=40,
-                )
-            except subprocess.TimeoutExpired:
-                last_stderr = "yt-dlp metadata probe timed out (40s)"
-                continue
-            out_lines = (dur_result.stdout or "").strip().splitlines()
-            if dur_result.returncode == 0 and out_lines:
-                try:
-                    # yt-dlp prints duration as a float; take the last line in
-                    # case warnings leaked onto stdout.
-                    duration = int(float(out_lines[-1]))
-                    working_strat = strat
-                    break
-                except ValueError:
-                    pass
-            last_stderr = (dur_result.stderr or "")[-500:]
-
-        # No strategy could even read the video's metadata -> fail fast with a
-        # classified message instead of attempting doomed downloads.
-        if working_strat is None:
-            raise HTTPException(422, _youtube_error_detail(last_stderr))
-
-        if duration > LONG_CLIP_THRESHOLD:
-            quarter = duration // 4
-            segments = [
-                (quarter, quarter + SEGMENT_LEN),
-                (2 * quarter, 2 * quarter + SEGMENT_LEN),
-                (3 * quarter, 3 * quarter + SEGMENT_LEN),
-            ]
-        else:
-            segments = [None]
-
-        all_probs = []
-        anchor_tonic = None
-        for seg in segments:
-            seg_dir = os.path.join(tmpdir, f"seg_{seg[0] if seg else 'full'}")
-            os.makedirs(seg_dir, exist_ok=True)
-            output_template = os.path.join(seg_dir, "audio.%(ext)s")
-
-            # Reuse the strategy that won the probe — no per-segment client loop.
-            dl_args = _ytdlp_base(working_strat) + [
+            dl_args = _ytdlp_base(strat) + [
                 "-x", "--audio-format", "wav",
                 "-o", output_template,
+                # yt-dlp clamps the window to the real length for short clips.
+                "--download-sections", f"*0-{SEGMENT_LEN}",
+                url,
             ]
-            if seg is not None:
-                dl_args += ["--download-sections", f"*{seg[0]}-{seg[1]}"]
-            dl_args.append(url)
-
             try:
                 result = subprocess.run(dl_args, capture_output=True, text=True, timeout=90)
             except subprocess.TimeoutExpired:
                 last_stderr = "yt-dlp download timed out (90s)"
                 continue
-            if result.returncode != 0:
-                last_stderr = (result.stderr or "")[-500:]
-                continue
+            if result.returncode == 0 and globmod.glob(os.path.join(tmpdir, "audio.*")):
+                download_ok = True
+                break
+            last_stderr = (result.stderr or "")[-500:]
 
-            wav_files = globmod.glob(os.path.join(seg_dir, "audio.*"))
-            if not wav_files:
-                continue
-
-            # First successful segment sets Sa so later segments share the same cents reference.
-            seg_override = override if override is not None else anchor_tonic
-            try:
-                features, tonic = extract_features_from_audio(
-                    wav_files[0], tonic_override=seg_override
-                )
-                if anchor_tonic is None:
-                    anchor_tonic = tonic
-                all_probs.append(MODEL.predict_proba(SCALER.transform([features]))[0])
-            except Exception:
-                continue
-
-        if not all_probs:
-            # Metadata read but every download/feature pass failed. Surface the
-            # classified yt-dlp failure so the UI can guide the user.
+        if not download_ok:
             raise HTTPException(422, _youtube_error_detail(last_stderr))
 
-        avg_probs = np.mean(all_probs, axis=0)
-        used_tonic = override if override is not None else anchor_tonic
-        return _format_response(avg_probs, used_tonic, tonic_overridden=override is not None)
+        wav_files = globmod.glob(os.path.join(tmpdir, "audio.*"))
+        try:
+            features, tonic = extract_features_from_audio(
+                wav_files[0], tonic_override=override
+            )
+            probs = MODEL.predict_proba(SCALER.transform([features]))[0]
+        except Exception:
+            raise HTTPException(422, _youtube_error_detail(last_stderr or "feature extraction failed"))
+
+        used_tonic = override if override is not None else tonic
+        return _format_response(probs, used_tonic, tonic_overridden=override is not None)
 
 
 class FeedbackRequest(BaseModel):
