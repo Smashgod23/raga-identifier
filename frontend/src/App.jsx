@@ -297,7 +297,7 @@ export default function App() {
               <div style={styles.youtubeIcon}>▶</div>
               <div>
                 <div style={styles.inputLabel}>YouTube Link</div>
-                <div style={styles.inputDesc}>Paste a link to identify the raga</div>
+                <div style={styles.inputDesc}>Paste a link (best effort). If YouTube blocks it, use Upload instead.</div>
               </div>
             </div>
             <div style={styles.youtubeInputRow}>

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import tempfile, os, sys, atexit
-from urllib.parse import urlparse
+import tempfile, os, sys, atexit, threading
+from urllib.parse import urlparse, parse_qs
 import numpy as np
 import pickle
 import json
@@ -328,11 +328,11 @@ def _youtube_error_detail(stderr: str) -> str:
         # The shared datacenter IP got rate limited or had its download dropped
         # mid-stream. This is the common transient failure, so keep the message
         # clean (no raw SSL noise) and hand the user a concrete workaround.
-        return ("Too many YouTube requests hit this server in the last few "
-                "minutes, so YouTube is rate-limiting it. Wait about 3 to 5 "
-                "minutes and try the link again. To skip the wait, download the "
-                "audio from the video with a tool like https://cobalt.tools and "
-                "upload that file here with the Upload button.")
+        return ("YouTube is rate-limiting this server right now. It blocks shared "
+                "cloud servers after a few requests. Wait a few minutes and try the "
+                "same link again (results are cached once one works). If it keeps "
+                "failing, download the audio yourself and use the Upload button "
+                "with the file instead.")
     else:
         msg = "Could not extract audio from this video. Try uploading the audio file directly."
     if stderr:
@@ -351,25 +351,47 @@ def _looks_throttled(stderr: str) -> bool:
         "connection reset", "connection aborted", "read timed out", "handshake"))
 
 
+# Per-video result cache + single-flight lock. The shared datacenter IP only
+# succeeds occasionally and throttles harder under concurrent load, so: (1) once
+# a link succeeds we cache the result and never hit YouTube for it again, and
+# (2) only one fetch runs at a time. In-memory, so it resets on Space restart.
+_YT_CACHE = {}
+_YT_CACHE_MAX = 256
+_yt_fetch_lock = threading.Lock()
+
+
+def _youtube_video_id(url: str) -> Optional[str]:
+    """Extract the canonical video id from a YouTube URL so cache hits work
+    regardless of extra query params (playlist, timestamp, si=...)."""
+    try:
+        u = urlparse(url)
+    except ValueError:
+        return None
+    host = (u.hostname or "").lower()
+    if host == "youtu.be":
+        vid = u.path.lstrip("/").split("/")[0]
+        return vid or None
+    if host == "youtube.com" or host.endswith(".youtube.com"):
+        v = parse_qs(u.query).get("v")
+        if v and v[0]:
+            return v[0]
+        parts = [p for p in u.path.split("/") if p]
+        if len(parts) >= 2 and parts[0] in ("shorts", "embed", "live", "v"):
+            return parts[1]
+    return None
+
+
 class YouTubeRequest(BaseModel):
     url: str
     tonic_hz: Optional[float] = None
 
 
-@app.post("/predict-youtube")
-def predict_youtube(request: YouTubeRequest):
-    # Sync (not async) on purpose: this handler does blocking work (yt-dlp
-    # subprocess + librosa pitch extraction). As a plain def, FastAPI runs it in
-    # a worker thread instead of on the event loop, so one slow YouTube fetch
-    # can't freeze /health and every other request.
+def _do_youtube_fetch(url, override):
+    """Download one analysis window and run inference. Raises HTTPException on
+    failure. Pulled out of the endpoint so the single-flight lock wraps only this
+    blocking work."""
     import subprocess
     import glob as globmod
-
-    url = request.url
-    if not _is_youtube_url(url):
-        raise HTTPException(400, "Please provide a valid YouTube URL")
-
-    override = request.tonic_hz if request.tonic_hz and request.tonic_hz > 0 else None
 
     # Extractor strategies tried in order until one downloads. With the EJS
     # challenge solver enabled (and Deno in the image), the default web client
@@ -430,6 +452,43 @@ def predict_youtube(request: YouTubeRequest):
 
         used_tonic = override if override is not None else tonic
         return _format_response(probs, used_tonic, tonic_overridden=override is not None)
+
+
+@app.post("/predict-youtube")
+def predict_youtube(request: YouTubeRequest):
+    # Sync (not async) on purpose: the fetch does blocking work (yt-dlp subprocess
+    # + librosa). As a plain def, FastAPI runs it in a worker thread, so a slow
+    # YouTube fetch can't freeze /health and every other request.
+    url = request.url
+    if not _is_youtube_url(url):
+        raise HTTPException(400, "Please provide a valid YouTube URL")
+
+    override = request.tonic_hz if request.tonic_hz and request.tonic_hz > 0 else None
+
+    # Cache hit -> instant, no YouTube call. This is what makes already-seen links
+    # dependable: the first fetch may need a retry, but after one success it is
+    # served from here.
+    vid = _youtube_video_id(url)
+    cache_key = (vid, override) if vid else None
+    if cache_key is not None and cache_key in _YT_CACHE:
+        return _YT_CACHE[cache_key]
+
+    # Single-flight: a second fetch arriving mid-fetch is told to wait rather than
+    # piling onto the shared IP and throttling both into failure.
+    if not _yt_fetch_lock.acquire(blocking=False):
+        raise HTTPException(429, "The server is busy fetching another YouTube link "
+            "right now. Wait a moment and try again, or use the Upload button with "
+            "an audio file instead.")
+    try:
+        payload = _do_youtube_fetch(url, override)
+    finally:
+        _yt_fetch_lock.release()
+
+    if cache_key is not None:
+        if len(_YT_CACHE) >= _YT_CACHE_MAX:
+            _YT_CACHE.clear()
+        _YT_CACHE[cache_key] = payload
+    return payload
 
 
 class FeedbackRequest(BaseModel):
