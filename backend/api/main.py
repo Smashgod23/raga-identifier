@@ -295,6 +295,10 @@ def _ytdlp_base(strat: list) -> list:
         "yt-dlp", "--no-playlist",
         "--remote-components", "ejs:github",
         "--cache-dir", YT_DLP_CACHE,
+        # Google throttles this Space's datacenter IP and drops media
+        # connections mid-stream (SSL EOF). A couple of retries with a short
+        # socket timeout recovers transient drops without hanging on a dead one.
+        "--retries", "2", "--fragment-retries", "2", "--socket-timeout", "20",
     ]
     if YT_COOKIE_FILE:
         args += ["--cookies", YT_COOKIE_FILE]
@@ -333,7 +337,11 @@ class YouTubeRequest(BaseModel):
 
 
 @app.post("/predict-youtube")
-async def predict_youtube(request: YouTubeRequest):
+def predict_youtube(request: YouTubeRequest):
+    # Sync (not async) on purpose: this handler does blocking work (yt-dlp
+    # subprocess + librosa pitch extraction). As a plain def, FastAPI runs it in
+    # a worker thread instead of on the event loop, so one slow YouTube fetch
+    # can't freeze /health and every other request.
     import subprocess
     import glob as globmod
 
@@ -373,9 +381,9 @@ async def predict_youtube(request: YouTubeRequest):
                 url,
             ]
             try:
-                result = subprocess.run(dl_args, capture_output=True, text=True, timeout=90)
+                result = subprocess.run(dl_args, capture_output=True, text=True, timeout=60)
             except subprocess.TimeoutExpired:
-                last_stderr = "yt-dlp download timed out (90s)"
+                last_stderr = "yt-dlp download timed out (60s)"
                 continue
             if result.returncode == 0 and globmod.glob(os.path.join(tmpdir, "audio.*")):
                 download_ok = True
