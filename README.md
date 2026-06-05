@@ -166,7 +166,7 @@ A learned re-ranker that scores the heuristic tonic detector's top-5 candidates 
 
 ### Backend API (FastAPI, Hugging Face Spaces)
 
-The backend is a FastAPI application deployed on Hugging Face Spaces at smashgod23-raga-identifier-api.hf.space, built from `backend/Dockerfile` (python:3.11-slim + ffmpeg + libsndfile1). I originally shipped on Railway's free trial, then moved to HF Spaces when the trial ended; the Dockerfile is unchanged between them.
+The backend is a FastAPI application deployed on Hugging Face Spaces at smashgod23-raga-identifier-api.hf.space, built from `backend/Dockerfile` (python:3.11-slim + ffmpeg + libsndfile1 + the Deno JS runtime, which yt-dlp uses to solve YouTube's challenge scripts). I originally shipped on Railway's free trial, then moved to HF Spaces when the trial ended.
 
 On startup it downloads the model, scaler, and class list from Hugging Face Hub (Smashgod23/raga-identifier) to avoid storing large files in the git repository.
 
@@ -174,7 +174,7 @@ Endpoints:
 - GET /health: returns status and number of ragas
 - GET /ragas: returns the full list of 40 ragas
 - POST /predict: accepts an audio file, runs inference, saves the audio to Supabase Storage, returns top 5 predictions and a unique audio ID
-- POST /predict-youtube: accepts a YouTube URL, downloads audio using yt-dlp. For videos longer than 3 minutes, it samples 3 segments from different parts of the video (at 25%, 50%, and 75% through) and averages the predictions, which avoids tuning sections and intros that would throw off the model. Returns top 5 predictions.
+- POST /predict-youtube: accepts a YouTube URL and downloads a single 90-second window using yt-dlp, with Deno plus yt-dlp's EJS challenge solver and an optional YT_COOKIES secret to get past YouTube's bot checks. Results are cached per video ID so a link that has worked once is returned instantly afterward, and a single-flight lock keeps concurrent requests from throttling the shared server IP. Returns top 5 predictions, or a clear message pointing the user to file upload when YouTube rate-limits the server. This path is best effort: the backend runs on a shared datacenter IP that YouTube blocks under repeated load, which is documented in detail in the Obstacles section.
 - POST /feedback: accepts user feedback (predicted raga, actual raga, correctness, confidence, audio filename) and stores it in the Supabase feedback table
 
 The backend uses Supabase for storage and the feedback database. Environment variables SUPABASE_URL and SUPABASE_KEY are set as Hugging Face Spaces secrets.
@@ -186,7 +186,7 @@ The frontend is a React application deployed on Vercel at raga-identifier.vercel
 Features:
 - Live microphone recording with real-time waveform visualization using the Web Audio API AnalyserNode
 - File upload for .wav, .mp3, and .m4a files
-- YouTube link input: paste a YouTube URL and the backend extracts and analyzes the audio
+- YouTube link input (best effort): paste a YouTube URL and the backend tries to extract and analyze the audio. Because the server runs on a datacenter IP that YouTube throttles, this can fail under load, in which case the UI points the user to file upload instead. Links that have succeeded once are cached and load instantly.
 - Step-by-step processing status messages that keep the user informed during analysis (e.g. "Detecting pitch contour...", "Estimating tonic (Sa)..."), with extra context for YouTube downloads
 - Results display showing the top raga name, confidence percentage, arohanam, avarohanam, and a confidence bar chart for the top 5 predictions
 - Similar ragas panel based on shared swara sets
@@ -217,9 +217,27 @@ Getting the tonic of a new recording right is the single hardest part of the inf
 
 When I built the audio clip preprocessing pipeline, I initially planned to auto-detect the tonic for each 30-second clip the same way inference does it at runtime. I ran a diagnostic on five random recordings before starting the overnight pipeline run, and found that 3 out of 5 were completely wrong - one had an octave error where the algorithm detected 91.95 Hz instead of 183.51 Hz (the median voiced pitch sat right on the boundary of the octave-folding loop), one locked onto Pa instead of Sa because the tanpura drone sustains both notes equally and the early part of the recording had more melodic activity on the fifth, and one locked onto Ri during the alapana intro where the performer was ornamenting that swara heavily. The per-clip failure rate on 30-second windows would have been around 60%, producing garbage features after a multi-hour processing run. I killed the pipeline before it wrote any output and refactored it to pre-load the expert-annotated .tonicFine values (one per recording) and pass them through as a tonic override. All 480 recordings have matching .tonicFine files, and the pipeline now hard-aborts at startup if any are missing.
 
-**YouTube download issues**
+**YouTube link extraction and the datacenter IP wall**
 
-yt-dlp initially failed because it needed a JavaScript runtime to solve YouTube's challenge system. Installing Deno and updating yt-dlp resolved this. Many video URLs were also unavailable, requiring multiple retries with different videos.
+The YouTube link feature was the longest single fight in the whole project, and it taught me more about deployment reality than about machine learning. The first version was simple: take a URL, run yt-dlp, feed the audio to the model. On my laptop it worked on the first try. In production it almost never did, and untangling why took many rounds.
+
+The first problem was local. yt-dlp needed a JavaScript runtime to solve YouTube's challenge system, and some video URLs were simply unavailable, so I installed Deno, updated yt-dlp, and added retries across a few videos. That got it working on my home connection.
+
+Then I found that the deploy was not what my own docs claimed. The frontend was pointing at a Hugging Face Space, not Railway, and the Space had been running code that was weeks behind GitHub, because pushing to GitHub never actually redeployed it. There was no link between the two. So the YouTube fix I thought was live had never shipped. I had to authenticate to Hugging Face and push the backend straight to the Space to get any change live at all.
+
+The deeper problem was the IP address. Hugging Face Spaces run on shared datacenter IPs, and YouTube blocks those hard. The exact same yt-dlp command that worked instantly at home would hang for minutes on the Space and then fail. The old endpoint made this worse: it probed the video duration and then downloaded three separate 90-second segments, each retried across three player clients, so a failing video could grind for almost 18 minutes before giving up. I rewrote it to bail fast and to surface the real error instead of a generic one.
+
+To get past YouTube's bot wall I added two things. First, I baked Deno into the Docker image and turned on yt-dlp's EJS challenge solver, which lets it solve YouTube's signature and token challenges itself. Second, I exported my own logged-in YouTube cookies from Chrome and stored them as a Space secret so requests look authenticated. With both in place I finally got a real success from the server, a genuine prediction in about 65 seconds. That proved the bot wall was beatable.
+
+But beating the bot wall did not beat the throttle. Google rate-limits the datacenter IP at the network level and kills the audio download mid-stream with an SSL error after only a request or two. The first request after the IP had rested would succeed, and the next one would fail. I cut the work down to a single 90-second window with no duration probe, so each prediction makes one request to YouTube instead of four. That sped up the good case and slowed how fast the IP got throttled. I made the request handler synchronous so one slow fetch could not freeze the whole server, added short download retries, and made the endpoint give up quickly when it detected an IP-level block instead of wasting a minute per client.
+
+Along the way I caused a scare. While mirroring a change to the Space I copied my GitHub backend file over the Space's version, which pulled in the newer Essentia and TDMS code that the Space has neither the dependencies nor the model files to run. That push would have crashed the entire Space on startup and taken down the working upload feature with it. I caught it from the deploy output before it mattered, restored the correct file, and verified the Space came back healthy. The lesson was that the Space runs a deliberately trimmed version of the backend, and I can never blindly copy the full one onto it.
+
+Even after all of that, the feature still felt broken from a normal user's seat, and I had to be honest about why. I reproduced the exact failure through the live site and watched the network call: the backend returned a clean rate-limit error about four minutes after a separate test had returned a successful prediction. The frontend was wired correctly. The IP simply throttles after roughly one request, so a real person who pastes a link, sees it fail, and tries again almost always lands on a blocked state. I had been quietly fooling myself with isolated tests that each caught a brief good window.
+
+I then researched whether any free route could move the download off the blocked IP, by borrowing some other server's address through a public YouTube front-end. I tested the obvious candidates live and they were all blocked too. The public cobalt.tools downloader has been cut off from YouTube since mid-2025, every Invidious instance I tried returned 403, and the Piped instances reported that YouTube had blocked them with the same bot check. I also confirmed that doing the download in the visitor's own browser is impossible, because browsers refuse to let a web page read the audio bytes of a cross-origin resource like YouTube, which is the whole reason every downloader is a server in the first place. The honest conclusion is that there is no free way to make a public, unattended YouTube button reliable in 2026. The only real fix is a paid residential proxy.
+
+So I built the best version that free infrastructure allows. Once any link succeeds, I cache the result keyed by the video ID, so that video is served instantly and reliably from then on with no further YouTube call. I added a single-flight lock so two requests can never hit the IP at the same time. I fixed the error message to stop pointing at the dead cobalt link and to tell the user to wait or upload a file, and I labeled the YouTube box as best effort. The measured result is that a fresh link takes about 65 seconds when the IP is willing, and a previously seen link comes back in about 0.16 seconds and never fails. For my own demos I warm the videos I plan to show once beforehand, after which they are dependable. File upload remains the path that always works.
 
 **Data augmentation failure**
 
@@ -880,6 +898,10 @@ The re-ranker described in the Tonic Detector section above sits at `models/toni
 **Bidirectional octave fold in candidate generation**
 
 The parity-fix work uncovered the real bottleneck: production's `_detect_tonic` only contains the correct tonic in its top-5 candidates 60.4% of the time, because the upward-only octave fold drops candidates an octave low. Making the fold bidirectional should raise the ceiling substantially. The re-ranker would need to be retrained against the new candidate distribution.
+
+**Make the YouTube link reliable, or retire it**
+
+The YouTube button is best effort today because the Hugging Face Space runs on a shared datacenter IP that YouTube throttles (the full story is in the Obstacles section). The only way to make it reliable for arbitrary visitors is to route yt-dlp through a residential proxy, which is about a ten-line change (a `--proxy` flag in the fetch) but costs a few dollars a month. A free middle step is to persist the per-video result cache to Supabase instead of keeping it in memory, so links that have worked once stay fast across Space restarts rather than only within a single run. If neither feels worth it, the honest alternative is to drop the link box and rely on file upload, which always works.
 
 **More ragas**
 
