@@ -261,7 +261,7 @@ export default function App() {
           <div style={styles.tonicPicker}>
             <div>
               <div style={styles.tonicLabel}>My Sa <span style={styles.tonicHint}>optional</span></div>
-              <div style={styles.tonicDesc}>Set this for solo voice — auto-detect works best with a tambura drone</div>
+              <div style={styles.tonicDesc}>Set this for solo voice. Auto-detect works best with a tambura drone</div>
             </div>
             <select
               style={styles.tonicSelect}
@@ -431,7 +431,7 @@ export default function App() {
                             {r}
                           </div>
                         ))
-                      : <div style={styles.dropdownEmpty}>Not found — we're working on adding more ragas!</div>
+                      : <div style={styles.dropdownEmpty}>Not found. We're working on adding more ragas!</div>
                     }
                   </div>
                 )}
