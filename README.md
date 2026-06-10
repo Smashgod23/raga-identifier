@@ -954,7 +954,7 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 raga-identifier/
 ├── backend/
 │   ├── api/
-│   │   └── main.py                          FastAPI app (deployed)
+│   │   └── main.py                          FastAPI app: /predict (v1), /predict-tdms (Phase 13), /predict-youtube, /feedback
 │   ├── src/
 │   │   │
 │   │   │  --- v1 deployed pipeline ---
@@ -979,6 +979,7 @@ raga-identifier/
 │   │   │  --- tonic detector (Tonic Detector section, not deployed) ---
 │   │   ├── extract_tonic_candidates.py      Generate top-5 tonic candidates per recording
 │   │   ├── train_tonic_detector.py          Learned re-ranker for tonic candidates (+2.1 pp)
+│   │   ├── convert_tonic_detector.py        .pt to numpy .npz (deploy image has no PyTorch)
 │   │   ├── verify_tonic_detection.py        Auto-tonic vs expert diagnostic on 5 recordings
 │   │   │
 │   │   │  --- Phase 6: honest baseline + shared eval harness ---
@@ -994,12 +995,37 @@ raga-identifier/
 │   │   ├── build_tdms_from_audio.py         Pyin + tonic detection → TDMS, runtime variant
 │   │   ├── eval_audio_ab.py                 v1 vs TDMS on identical audio (37.36% vs 8.32%)
 │   │   ├── eval_audio_expert_tonic.py       Pyin + expert tonic (45.81%) — Phase 9a
-│   │   └── eval_crepe_audio.py              CREPE + expert tonic (51.51%) — Phase 9b
+│   │   ├── eval_crepe_audio.py              CREPE + expert tonic (51.51%) — Phase 9b
+│   │   │
+│   │   │  --- Phase 10: long templates + multi-window queries ---
+│   │   ├── eval_long_templates.py           Phase 10a: 5-min templates, 60s queries (55.10%)
+│   │   ├── eval_multiwindow_queries.py      Phase 10b: 3×60s averaged queries (73.23%)
+│   │   │
+│   │   │  --- Phase 11: production-faithful tonic (heuristic, re-ranker) ---
+│   │   ├── eval_multiwindow_heuristic.py    Phase 11a: heuristic tonic, real prod number (35.83%)
+│   │   ├── eval_multiwindow_reranker.py     Phase 11b: re-ranker tonic, regressed (34.08%)
+│   │   │
+│   │   │  --- Phase 12: tonic scorer (octave-fold non-lever, sa_pa drone) ---
+│   │   ├── eval_tonic_candidates.py         Phase 12: octave-fold + candidate-count diagnostic
+│   │   ├── eval_tonic_scorers.py            Phase 12b: sa_pa drone scorer, tonic 51.9% to 65.0%
+│   │   ├── eval_multiwindow_sapa.py         Phase 12c: end-to-end sa_pa pipeline (42.25%)
+│   │   │
+│   │   │  --- Phase 13: Essentia expert extractors at inference (shipped) ---
+│   │   ├── eval_essentia_tonic.py           Phase 13: TonicIndianArtMusic, tonic top-1 85.4%
+│   │   ├── eval_essentia_pipeline.py        Phase 13b: Melodia 5-min templates + 3×60s (62.29%)
+│   │   ├── eval_essentia_full.py            Phase 13c: full-recording templates + 3×60s (70.00%)
+│   │   ├── eval_essentia_5win.py            Phase 13d: full templates + 5×60s queries (73.62%)
+│   │   ├── eval_essentia_lengthcurve.py     Accuracy vs upload length (30s to ~10min)
+│   │   │
+│   │   │  --- TDMS production inference (/predict-tdms) ---
+│   │   ├── predict_tdms.py                  Phase 10b TDMS 1-NN inference module
+│   │   └── predict_essentia.py              Phase 13 Essentia inference, shipped on /predict-tdms
 │   │
 │   ├── data/
 │   │   ├── X.npy / y.npy                    CompMusic v1 training features (480 × 360)
 │   │   ├── X_yt.npy / y_yt.npy              YouTube v1 training features (209 × 360)
 │   │   ├── X_tdms.npy / y_tdms.npy          Phase 7 expert templates (480 × 14400)
+│   │   ├── X_tdms_essfull_template.npy      Phase 13 shipped template index (Melodia + expert tonic)
 │   │   ├── X_audio_clips.npy                v2 per-clip features (44,071 × 360)
 │   │   ├── X_15s.npy / X_1min.npy / ...     v3 multi-scale features (gitignored)
 │   │   ├── classes.json                     Raga names (40)
@@ -1008,7 +1034,8 @@ raga-identifier/
 │   │   ├── train_tdms_report.txt            Phase 7 artifact
 │   │   ├── eval_audio_ab_report.txt         Phase 8 artifact
 │   │   ├── eval_audio_expert_tonic_report.txt   Phase 9a artifact
-│   │   └── eval_crepe_audio_report.txt      Phase 9b artifact
+│   │   ├── eval_crepe_audio_report.txt      Phase 9b artifact
+│   │   └── eval_*_report.txt                One eval artifact per Phase 8-13 experiment
 │   ├── models/
 │   │   ├── raga_model_best.pt               v1 PyTorch
 │   │   ├── raga_sklearn.pkl                 v1 deployed sklearn (loaded at startup from HF)
@@ -1019,7 +1046,8 @@ raga-identifier/
 │   │   ├── raga_sklearn_v3.pkl / scaler_v3.pkl   v3 (not deployed)
 │   │   ├── raga_cnn_v4.pt                   v4 (failed)
 │   │   ├── raga_ast_head_v5.pt              v5 (failed)
-│   │   └── tonic_detector_v1.pt             Tonic Detector section learned tonic re-ranker (not wired)
+│   │   ├── tonic_detector_v1.pt             Tonic Detector section learned tonic re-ranker (not wired)
+│   │   └── tonic_detector_v1.npz            Numpy weights of the above (deploy has no PyTorch)
 │   ├── requirements.txt                     Full local dependencies (includes crepe, TF)
 │   ├── requirements-deploy.txt              Slim production deps (no PyTorch, no crepe, no TF)
 │   ├── Dockerfile                           HF Spaces build (python:3.11-slim + ffmpeg)
