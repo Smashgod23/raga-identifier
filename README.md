@@ -879,25 +879,23 @@ The original v1 sklearn model is archived on Hugging Face as `raga_sklearn_v1_84
 
 ## Next Steps
 
-**Replace v1 with TDMS-on-audio in production**
+The Phase 6-13 work above replaced most of what used to live in this section. Building the TDMS-on-audio pipeline, switching the extractor, running the longer-window and multi-window experiments, and fixing tonic detection are all done and shipped on the `/predict-tdms` endpoint. What follows is what is actually left.
 
-This is the headline next step. The Phase 8 benchmark shows v1's deployed pipeline at 8.32% top-1 and TDMS-on-audio at 37.36% top-1 on the same audio. Deployment requires three pieces: rebuilding the 480 templates from audio (not from expert pitch — Phase 8 cross-source numbers showed those don't generalize), uploading them to Hugging Face Hub alongside `raga_sklearn.pkl`, and rewriting `predict.py`'s feature extraction to produce a 14400-D TDMS instead of the current 360-D PCD. The 1-NN lookup is fast (one symmetric-KL distance per template, 480 templates total — a few milliseconds).
+**Point the live frontend at `/predict-tdms`**
 
-**Switch pyin to CREPE in the audio pipeline**
+This is the headline next step now that the Phase 13 Essentia model ships on `/predict-tdms`. The live frontend still calls the v1 `/predict` endpoint, which runs at about 8% top-1 on real audio. The Essentia TDMS path is 75.62% top-1 / 91.17% top-5 on full-length input and lands near 70% on a two to three minute upload. Switching the frontend's `API_URL` path from `/predict` to `/predict-tdms` is a one-line change in `App.jsx` and is the single highest-impact thing left to do. The one prerequisite is confirming the endpoint stays healthy on Hugging Face Spaces under the slim Essentia deploy image before flipping users over.
 
-Phase 9b showed CREPE (model='small') gives +5.7 pp top-1 and +4.4 pp top-5 over pyin on identical audio with identical tonic. The cost is real — CREPE adds ~3-5 seconds of inference latency per 60s clip on CPU — but the accuracy gain is enough to justify it given how broken the v1 audio path is. The full CREPE model (`model_capacity='full'`) might add another 1-2 pp at the cost of much higher latency; not worth it unless Phase 10's longer-window experiment changes the calculus.
+**Rebuild the template index with the Essentia tonic**
 
-**Phase 10: longer windows and multi-window aggregation**
+The shipped template index (`X_tdms_essfull_template.npy`) was built from audio with Melodia pitch but using each recording's expert `.tonicFine` annotation for the tonic. Rebuilding it with `TonicIndianArtMusic` instead (the same detector the query path already runs, 85.4% on its own) would let the index regenerate entirely from raw audio with no dataset labels. That matters little for the current 40 ragas, which all have expert tonics, and a lot for expanding past them, where new template audio will not come annotated.
 
-The 60s-vs-full-recording gap is what's left in the bottleneck attribution. The same CREPE + expert-tonic pipeline applied to the entire 30-minute recording instead of a 60s middle window should land much closer to the 85.67% Phase 1 ceiling. Production can't do that on every query (the user is uploading a short clip), but the *template index* can be built from full audio, which makes the asymmetry between train and inference work in our favor — long, dense templates queried by short, sparse user clips. Multi-window aggregation at inference (average TDMSs from three 60s windows of the user's upload before the 1-NN lookup) is the matched-cost variant. Phase 10 will run both.
+**A learned sequence model on Melodia contours (DeepSRGM-style)**
 
-**Wire the learned tonic detector into production**
+Every model I have shipped is either a histogram (v1) or a nearest-neighbor lookup over a 2D surface (TDMS). Neither learns phrase structure directly. DeepSRGM (ISMIR 2019) runs a bidirectional LSTM over the pitch sequence and reports 88.1% on this dataset. I avoided learned sequence models earlier because bad pitch and tonic in means garbage out, but Phase 13 fixed the input quality by running the real expert extractors at inference. With Melodia pitch and Gulati tonic now available on raw audio, a bi-LSTM is the most credible path from the current 75% toward the 85%+ expert-feature ceiling.
 
-The re-ranker described in the Tonic Detector section above sits at `models/tonic_detector_v1.pt` and is not yet called from `api/main.py`. The integration is small (one inference call between the existing candidate generation and the existing feature extraction). Phase 9a says this is worth +2.1 pp on tonic accuracy and on the order of +5-8 pp on raga top-1 in the audio pipeline — modest but cheap.
+**Dead ends I am not going to retry**
 
-**Bidirectional octave fold in candidate generation**
-
-The parity-fix work uncovered the real bottleneck: production's `_detect_tonic` only contains the correct tonic in its top-5 candidates 60.4% of the time, because the upward-only octave fold drops candidates an octave low. Making the fold bidirectional should raise the ceiling substantially. The re-ranker would need to be retrained against the new candidate distribution.
+Phases 4 through 13 ruled several things out, and I am recording them here so this section stops re-accumulating them. From-scratch CNNs (Phase 4) and general-audio foundation-model embeddings (AST, Phase 5) both overfit recording-level confounders on 689 recordings and scored near chance. Data augmentation on the existing feature vectors destroys the normalized-histogram structure and has lowered accuracy every time I have tried it. The bidirectional octave fold I once wrote into this very section as the plan turned out to be a non-lever: the TDMS feature is octave-folded, so a tonic that is wrong by a full octave produces a byte-identical surface (Phase 12 proved this directly). And the learned tonic re-ranker regressed end to end (Phase 11b) because it was trained on a different slice of each recording than production queries. The lever that actually moved the needle was running the dataset's own expert algorithms, Melodia and the Gulati tonic, at inference instead of reimplementing pitch and tonic detection by hand.
 
 **Make the YouTube link reliable, or retire it**
 
