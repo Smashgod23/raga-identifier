@@ -903,6 +903,10 @@ Phases 4 through 13 ruled several things out, and I am recording them here so th
 
 The YouTube button is best effort today because the Hugging Face Space runs on a shared datacenter IP that YouTube throttles (the full story is in the Obstacles section). The only way to make it reliable for arbitrary visitors is to route yt-dlp through a residential proxy, which is about a ten-line change (a `--proxy` flag in the fetch) but costs a few dollars a month. The most promising free path is in-browser tab-audio capture with `getDisplayMedia`, which records the audio the YouTube player is already playing in the user's own browser, so it avoids both the datacenter IP block and the CORS wall that blocks a direct browser download (I confirmed that wall by testing: googlevideo.com returns no `Access-Control-Allow-Origin` header). The catch is that tab-audio capture is Chrome and Edge only, needs a share-tab permission click, and captures in real time, so it would ship alongside the existing Upload fallback for other browsers. A smaller free win that is already live: the backend keeps a per-video result cache in memory (keyed by video ID), so a link that has worked once comes back in under a second on the same Space run. Persisting that cache to Supabase would let those fast hits survive Space restarts instead of resetting on every redeploy. If none of these feels worth it, the honest alternative is to drop the link box and rely on file upload, which always works.
 
+**Wire up automatic Space deploys**
+
+Right now every backend change requires a manual clone-overlay-push to the Hugging Face Space. The GitHub Actions workflow file that would automate this (`sync-hf-space.yml`) exists locally but is untracked, and the `HF_TOKEN` secret has never been set in the GitHub repo. Committing the workflow and adding the secret would mean a push to `main` deploys the Space automatically, the same way Vercel already handles the frontend.
+
 **More ragas**
 
 The current 40 ragas represent a good cross-section of common Carnatic ragas but there are hundreds more. As I collect more data, the goal is to expand to at least 100 ragas.
