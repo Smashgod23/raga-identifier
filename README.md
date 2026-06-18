@@ -934,13 +934,15 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 | Layer | Technology |
 |---|---|
 | Audio loading and signal processing | librosa, scipy, yt-dlp, ffmpeg, libsndfile |
-| Pitch extraction (deployed) | librosa.pyin |
-| Pitch extraction (Phase 9b candidate) | crepe (CNN-based, TensorFlow) |
-| Feature engineering (deployed) | three-channel 360-D pitch class distribution |
-| Feature engineering (Phase 7 candidate) | TDMS 120 × 120 joint distribution + scipy.ndimage Gaussian smoothing |
+| Pitch extraction (v1, /predict) | librosa.pyin |
+| Pitch extraction (Phase 9b, tested) | crepe (CNN-based, TensorFlow) |
+| Pitch extraction (/predict-tdms) | Essentia Melodia |
+| Tonic detection (/predict-tdms) | Essentia TonicIndianArtMusic |
+| Feature engineering (v1, /predict) | three-channel 360-D pitch class distribution |
+| Feature engineering (/predict-tdms) | TDMS 120 x 120 joint distribution + scipy.ndimage Gaussian smoothing |
 | Model training | PyTorch (research), scikit-learn MLPClassifier (deployment) |
-| Model inference (deployed) | scikit-learn MLPClassifier on 360-D features |
-| Model inference (Phase 7 candidate) | 1-NN with symmetric-KL distance over 480 TDMS templates |
+| Model inference (v1, /predict) | scikit-learn MLPClassifier on 360-D features |
+| Model inference (/predict-tdms) | 1-NN with symmetric-KL distance over 480 TDMS templates |
 | Evaluation | scikit-learn StratifiedKFold (recording-aware), custom `eval_harness.py` |
 | Backend API | FastAPI, Python 3.11, uvicorn |
 | Backend hosting | Hugging Face Spaces (free tier, Docker SDK) |
