@@ -3,6 +3,7 @@
 A Carnatic music raga recognition system built by Pratham Aithal, a high school student at Rock Hill High School in Frisco, TX (PISD).
 
 Live site: https://raga-identifier.vercel.app
+API: https://raga-identifier-production.up.railway.app
 GitHub: https://github.com/Smashgod23/raga-identifier
 Contact: theprathamaithal@gmail.com
 
