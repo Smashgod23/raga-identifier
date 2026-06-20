@@ -951,6 +951,7 @@ Using Electron, the same React codebase can be packaged as a Mac, Windows, and L
 | Database and file storage | Supabase (Postgres + Storage) |
 | Frontend | React 19, Vite 8, Framer Motion, WaveSurfer.js |
 | Frontend hosting | Vercel (Hobby tier) |
+| Containerization | Docker (python:3.11-slim + ffmpeg + Essentia) |
 | Version control | GitHub |
 
 ---
