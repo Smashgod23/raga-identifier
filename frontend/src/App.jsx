@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
 import ragaData from './ragas.json'
 
@@ -49,6 +49,7 @@ export default function App() {
   const [showDropdown, setShowDropdown] = useState(false)
   const [audioId, setAudioId] = useState('')
   const [youtubeUrl, setYoutubeUrl] = useState('')
+  const [ytExamples, setYtExamples] = useState([])
   const [tonicHz, setTonicHz] = useState('')
   const [processingMsg, setProcessingMsg] = useState('')
   const processingTimerRef = useRef(null)
@@ -58,6 +59,15 @@ export default function App() {
   const timerRef = useRef(null)
   const fileInputRef = useRef(null)
   const animFrameRef = useRef(null)
+
+  // Curated YouTube examples with precomputed predictions. YouTube throttles the
+  // server's datacenter IP, so an arbitrary link is hit-or-miss; these are served
+  // from cache and always work, giving first-time visitors something reliable.
+  useEffect(() => {
+    axios.get(`${API_URL}/youtube-examples`)
+      .then(res => setYtExamples(res.data.examples || []))
+      .catch(() => {})
+  }, [])
 
   const startWaveformAnimation = (analyser) => {
     const bufferLength = analyser.frequencyBinCount
@@ -187,13 +197,17 @@ export default function App() {
     }
   }
 
-  const submitYoutubeUrl = async () => {
-    if (!youtubeUrl.trim()) return
+  const submitYoutubeUrl = async (urlArg) => {
+    // Accept an explicit URL (example chips pass one) or fall back to the input
+    // box. Guard against a click event being passed positionally.
+    const url = (typeof urlArg === 'string' ? urlArg : youtubeUrl).trim()
+    if (!url) return
+    setYoutubeUrl(url)
     setState('processing')
     setError(null)
     startProcessing(youtubeSteps)
     try {
-      const ytBody = { url: youtubeUrl }
+      const ytBody = { url }
       if (tonicHz) ytBody.tonic_hz = parseFloat(tonicHz)
       // Fetching + analyzing a few 90s windows finishes well inside two minutes;
       // cap the request so a stalled upstream fails the UI instead of spinning forever.
@@ -297,7 +311,7 @@ export default function App() {
               <div style={styles.youtubeIcon}>▶</div>
               <div>
                 <div style={styles.inputLabel}>YouTube Link</div>
-                <div style={styles.inputDesc}>Paste a link (best effort). If YouTube blocks it, use Upload instead.</div>
+                <div style={styles.inputDesc}>Paste a link (best effort). If YouTube blocks it, use Upload or try an example below.</div>
               </div>
             </div>
             <div style={styles.youtubeInputRow}>
@@ -310,12 +324,27 @@ export default function App() {
               />
               <button
                 style={{ ...styles.youtubeBtn, opacity: youtubeUrl.trim() ? 1 : 0.5 }}
-                onClick={submitYoutubeUrl}
+                onClick={() => submitYoutubeUrl()}
                 disabled={!youtubeUrl.trim()}
               >
                 Identify
               </button>
             </div>
+            {ytExamples.length > 0 && (
+              <div style={styles.exampleRow}>
+                <span style={styles.exampleLabel}>Try one:</span>
+                {ytExamples.map(ex => (
+                  <button
+                    key={ex.url}
+                    style={styles.exampleChip}
+                    onClick={() => submitYoutubeUrl(ex.url)}
+                    title={ex.title}
+                  >
+                    {ex.raga}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div style={styles.waveCard}>
             <div style={styles.waveLabel}>{state === 'recording' ? 'Live input' : 'Waveform'}</div>
@@ -494,6 +523,9 @@ const styles = {
   youtubeInputRow: { display: 'flex', gap: 8 },
   youtubeInput: { flex: 1, padding: '10px 14px', borderRadius: 8, border: '1px solid #e8e2da', fontSize: 14, background: '#faf8f5', outline: 'none', fontFamily: "'DM Sans', sans-serif" },
   youtubeBtn: { padding: '10px 20px', borderRadius: 8, background: '#c4826a', border: 'none', color: '#fff', fontSize: 13, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap' },
+  exampleRow: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 },
+  exampleLabel: { fontSize: 12, color: '#9a8c7d', marginRight: 2 },
+  exampleChip: { padding: '5px 12px', borderRadius: 999, background: '#faf8f5', border: '1px solid #e8d4c4', color: '#a86850', fontSize: 12, fontWeight: 500, cursor: 'pointer', fontFamily: "'DM Sans', sans-serif" },
   waveCard: { background: '#fff', border: '1px solid #e8e2da', borderRadius: 12, padding: '16px 20px', marginBottom: 28 },
   waveLabel: { fontSize: 11, color: '#b0a898', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 },
   waveBars: { display: 'flex', alignItems: 'center', gap: 2, height: 60 },

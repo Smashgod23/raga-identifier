@@ -102,16 +102,22 @@ def extract_features_from_audio(audio_path, tonic_override=None, offset=0.0, dur
     Returns (features, tonic_hz). `tonic_override` in Hz skips auto-detection."""
     import librosa
 
-    load_kwargs = {'sr': 16000, 'mono': True, 'offset': float(offset)}
-    if duration is not None:
-        load_kwargs['duration'] = float(duration)
+    # The deployed sklearn model was trained on features from a 60s window with
+    # peak normalization (git 970d390). Inference MUST match that pipeline, or the
+    # feature vectors drift away from what the model learned — a train/serve skew
+    # that silently wrecks accuracy (measured: cosine 0.44 vs the trained features,
+    # confident wrong predictions). So default to a 60s window and peak-normalize.
+    # Callers that pass an explicit duration (multi-segment averaging) set their
+    # own window; offset lets them sample different parts of a clip.
+    load_kwargs = {'sr': 16000, 'mono': True, 'offset': float(offset),
+                   'duration': float(duration) if duration is not None else 60}
     y, sr = librosa.load(audio_path, **load_kwargs)
 
-    # RMS normalization — robust to transient spikes (coughs, mic bumps, applause)
-    # that would otherwise dominate a peak-normalized signal.
-    rms = float(np.sqrt(np.mean(y ** 2))) if len(y) else 0.0
-    if rms > 1e-6:
-        y = y * (0.1 / rms)
+    # Peak normalization to match training. (An RMS-norm change shipped later
+    # broke alignment with the trained model and is reverted here.)
+    peak = float(np.max(np.abs(y))) if len(y) else 0.0
+    if peak > 0:
+        y = y / peak
 
     f0, voiced_flag, voiced_probs = librosa.pyin(
         y, fmin=60, fmax=800, sr=sr,
@@ -130,7 +136,12 @@ def extract_features_from_audio(audio_path, tonic_override=None, offset=0.0, dur
     if tonic_override is not None and float(tonic_override) > 0:
         tonic = _fold_override_to_tonic(tonic_override, voiced)
     else:
-        tonic = _detect_tonic(voiced)
+        # Top-5 peakedness scorer: the exact tonic detector the deployed model
+        # was trained with. The newer sa_pa scorer (Phase 12) picks a different
+        # Sa, which shifts every cent value and breaks alignment with this v1
+        # model, so v1 inference pins the training-time behavior. _detect_tonic
+        # keeps its sa_pa default for the offline eval scripts that rely on it.
+        tonic = _detect_tonic(voiced, k=5, scorer="peakedness")
 
     all_cents = 1200 * np.log2(voiced / tonic)
 

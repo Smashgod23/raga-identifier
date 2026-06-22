@@ -215,5 +215,5 @@ websockets==15.0.1
 widgetsnbextension==3.6.10
 wrapt==2.1.2
 yarl==1.23.0
-yt-dlp==2026.3.17
+yt-dlp==2026.6.9
 zstandard==0.25.0

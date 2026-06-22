@@ -1,0 +1,240 @@
+{
+  "Ol51u5A6yK4": {
+    "url": "https://www.youtube.com/watch?v=Ol51u5A6yK4",
+    "title": "Amrutha Venkatesh - Kalyani Alapana",
+    "expected_raga": "Kalyāṇi",
+    "payload": {
+      "top_raga": "Kalyāṇi",
+      "confidence": 97.3,
+      "predictions": [
+        {
+          "raga": "Kalyāṇi",
+          "confidence": 97.3
+        },
+        {
+          "raga": "Sahānā",
+          "confidence": 0.8
+        },
+        {
+          "raga": "Kāpi",
+          "confidence": 0.6
+        },
+        {
+          "raga": "Māyāmāḷavagauḷa",
+          "confidence": 0.3
+        },
+        {
+          "raga": "Nāṭakurinji",
+          "confidence": 0.3
+        }
+      ],
+      "tonic_hz": 289.8,
+      "tonic_note": "D4 (-23¢)",
+      "tonic_overridden": false
+    }
+  },
+  "0a91szM1Ivw": {
+    "url": "https://www.youtube.com/watch?v=0a91szM1Ivw",
+    "title": "Raga Bhairavi in Carnatic Music",
+    "expected_raga": "Bhairavi",
+    "payload": {
+      "top_raga": "Bhairavi",
+      "confidence": 98.7,
+      "predictions": [
+        {
+          "raga": "Bhairavi",
+          "confidence": 98.7
+        },
+        {
+          "raga": "Suraṭi",
+          "confidence": 0.5
+        },
+        {
+          "raga": "Dhanyāsi",
+          "confidence": 0.3
+        },
+        {
+          "raga": "Madhyamāvati",
+          "confidence": 0.2
+        },
+        {
+          "raga": "Kānaḍa",
+          "confidence": 0.1
+        }
+      ],
+      "tonic_hz": 218.7,
+      "tonic_note": "A3 (-10¢)",
+      "tonic_overridden": false
+    }
+  },
+  "uFO3whwMaX8": {
+    "url": "https://www.youtube.com/watch?v=uFO3whwMaX8",
+    "title": "MS Subbulakshmi - Todi Alapana",
+    "expected_raga": "Tōḍi",
+    "payload": {
+      "top_raga": "Tōḍi",
+      "confidence": 99.7,
+      "predictions": [
+        {
+          "raga": "Tōḍi",
+          "confidence": 99.7
+        },
+        {
+          "raga": "Śrīranjani",
+          "confidence": 0.2
+        },
+        {
+          "raga": "Sahānā",
+          "confidence": 0.0
+        },
+        {
+          "raga": "Sāvēri",
+          "confidence": 0.0
+        },
+        {
+          "raga": "Māyāmāḷavagauḷa",
+          "confidence": 0.0
+        }
+      ],
+      "tonic_hz": 190.5,
+      "tonic_note": "G3 (-49¢)",
+      "tonic_overridden": false
+    }
+  },
+  "t3KSXVci5o4": {
+    "url": "https://www.youtube.com/watch?v=t3KSXVci5o4",
+    "title": "Amrutha Venkatesh - Kapi Alapana",
+    "expected_raga": "Kāpi",
+    "payload": {
+      "top_raga": "Kāpi",
+      "confidence": 92.8,
+      "predictions": [
+        {
+          "raga": "Kāpi",
+          "confidence": 92.8
+        },
+        {
+          "raga": "Dēvagāndhāri",
+          "confidence": 1.5
+        },
+        {
+          "raga": "Bēgaḍa",
+          "confidence": 0.9
+        },
+        {
+          "raga": "Nāṭakurinji",
+          "confidence": 0.6
+        },
+        {
+          "raga": "Kānaḍa",
+          "confidence": 0.6
+        }
+      ],
+      "tonic_hz": 147.3,
+      "tonic_note": "D3 (+6¢)",
+      "tonic_overridden": false
+    }
+  },
+  "kl9fIlp2Xtk": {
+    "url": "https://www.youtube.com/watch?v=kl9fIlp2Xtk",
+    "title": "Harikambhoji Raga Alapana",
+    "expected_raga": "Harikāmbhōji",
+    "payload": {
+      "top_raga": "Harikāmbhōji",
+      "confidence": 49.4,
+      "predictions": [
+        {
+          "raga": "Harikāmbhōji",
+          "confidence": 49.4
+        },
+        {
+          "raga": "Kamās",
+          "confidence": 42.0
+        },
+        {
+          "raga": "Pūrvīkaḷyāṇi",
+          "confidence": 3.3
+        },
+        {
+          "raga": "Kāṁbhōji",
+          "confidence": 2.7
+        },
+        {
+          "raga": "Nāṭakurinji",
+          "confidence": 1.2
+        }
+      ],
+      "tonic_hz": 294.6,
+      "tonic_note": "D4 (+6¢)",
+      "tonic_overridden": false
+    }
+  },
+  "o_hcBabLYUU": {
+    "url": "https://www.youtube.com/watch?v=o_hcBabLYUU",
+    "title": "Nedunuri Krishnamurthy - Madhyamavati",
+    "expected_raga": "Madhyamāvati",
+    "payload": {
+      "top_raga": "Madhyamāvati",
+      "confidence": 94.0,
+      "predictions": [
+        {
+          "raga": "Madhyamāvati",
+          "confidence": 94.0
+        },
+        {
+          "raga": "Śrī",
+          "confidence": 1.9
+        },
+        {
+          "raga": "Gauḷa",
+          "confidence": 0.7
+        },
+        {
+          "raga": "Sencuruṭṭi",
+          "confidence": 0.4
+        },
+        {
+          "raga": "Aṭāna",
+          "confidence": 0.4
+        }
+      ],
+      "tonic_hz": 298.2,
+      "tonic_note": "D4 (+27¢)",
+      "tonic_overridden": false
+    }
+  },
+  "nIfA-bcwFFI": {
+    "url": "https://www.youtube.com/watch?v=nIfA-bcwFFI",
+    "title": "Dr L Subramaniam - Mohanam",
+    "expected_raga": "Mōhanaṁ",
+    "payload": {
+      "top_raga": "Mōhanaṁ",
+      "confidence": 99.7,
+      "predictions": [
+        {
+          "raga": "Mōhanaṁ",
+          "confidence": 99.7
+        },
+        {
+          "raga": "Kalyāṇi",
+          "confidence": 0.1
+        },
+        {
+          "raga": "Nāṭakurinji",
+          "confidence": 0.1
+        },
+        {
+          "raga": "Bhairavi",
+          "confidence": 0.0
+        },
+        {
+          "raga": "Kēdāragauḷa",
+          "confidence": 0.0
+        }
+      ],
+      "tonic_hz": 185.1,
+      "tonic_note": "F#3",
+      "tonic_overridden": false
+    }
+  }
+}

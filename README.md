@@ -3,7 +3,7 @@
 A Carnatic music raga recognition system built by Pratham Aithal, a high school student at Rock Hill High School in Frisco, TX (PISD).
 
 Live site: https://raga-identifier.vercel.app
-API: https://raga-identifier-production.up.railway.app
+API: https://smashgod23-raga-identifier-api.hf.space
 GitHub: https://github.com/Smashgod23/raga-identifier
 Contact: theprathamaithal@gmail.com
 
@@ -833,6 +833,62 @@ Accuracy scales steeply with how much audio the model gets — a single 30s wind
 
 What's explicitly NOT a good lever based on Phase 4-13 evidence: bigger from-scratch CNNs, general-audio foundation model embeddings, data augmentation on the 689 recordings, octave-fold changes, or hand-reimplementing pitch/tonic detection when Essentia's expert algorithms run fine at inference.
 
+## Phase 14: The YouTube Feature, and a Train/Serve Skew That Broke Every Prediction
+
+This phase started as a bug report, not a research direction. The YouTube link feature on the live site was not working, and the ask was simply to fix it. What I found was three separate failures stacked on top of each other, and the deepest one had been silently breaking every prediction the live model made, not just the ones from YouTube.
+
+### The Space was down, not just the feature
+
+The first thing I checked was the live backend, and it was not running at all. The Hugging Face Space had gone to sleep on the free tier and then wedged itself in a stuck BUILDING state: zero replicas, no container logs, more than twenty minutes with the Docker layers already cached. A normal wake from sleep takes a couple of minutes. I restarted the Space through the API and it came back healthy (`/health` returning `{"status":"ok","ragas":40}` in about a second), which meant the whole site had been down, not only the link box. Worth knowing about a free Space: it sleeps after inactivity and can occasionally get stuck waking up.
+
+### Reproducing the YouTube failure
+
+With the Space up, a real Carnatic link returned a 422 after exactly 62 seconds. That 62 seconds is yt-dlp hanging for its full 60 second timeout and then giving up, which is the signature of the datacenter IP throttle (YouTube stalls or drops the media connection mid-download), not the fast "sign in to confirm you're not a bot" response that an expired cookie would give. The throttle is the same datacenter-IP problem described in the Obstacles section; it is fundamental to running yt-dlp from a shared cloud IP, and the only complete fix is a residential proxy. So I set that part aside and went looking for the free levers.
+
+### yt-dlp was three months stale
+
+The deploy pinned `yt-dlp==2026.3.17`. The current release was `2026.06.09`. yt-dlp ships fixes constantly because YouTube keeps changing its player internals, and a three month old build often breaks against current YouTube on its own. Bumping it is free, so I did, in both `requirements.txt` and `requirements-deploy.txt`.
+
+### The real problem: the model was mispredicting everything
+
+Then I tried to verify a prediction, and it was wrong. I uploaded a known Kalyani clip to the live `/predict` endpoint and it returned Sāma at 80.9 percent confidence. Confident, and wrong. This had nothing to do with YouTube; the upload path never touches it. The model itself was returning the wrong raga for clean audio.
+
+My first suspicion was the scikit-learn version warning in the startup logs: the model pickle was created with sklearn 1.8.0, but both my local environment and the deploy run 1.5.2, and loading a newer-version model in an older sklearn can silently corrupt results. I ruled it out by running the saved training feature vectors back through the deployed model: 96.7 percent accuracy on the CompMusic set and 81.8 percent on the YouTube set. The model, scaler, and classes are a consistent set, and the warning is harmless for these estimators (the weights are plain numpy arrays). The model was fine.
+
+So if the model predicts its own training features correctly but mispredicts fresh audio, the features coming out of the inference pipeline must no longer match the features the model was trained on. I tested it directly: I took a Kalyani video that is in the training set, pulled its stored training feature vector, and extracted a fresh vector from the same video with the current code.
+
+| Source | Prediction | Cosine vs stored feature |
+|---|---|---|
+| stored training feature | Kalyāṇi 97.3% | 1.000 |
+| fresh extraction (current code) | Behāg 67.5% | 0.439 |
+
+A cosine of 0.44 means the current pipeline produces a feature vector that is almost unrelated to what the model learned. This is a textbook train/serve skew, and the git history showed exactly how it happened. The training features (`X_yt.npy`) were saved on March 28. After that date, `extract_features_from_audio` changed in two ways that both move the features: RMS normalization replaced peak normalization on April 17, and the tonic detector was rewritten on May 28-29 (the sa_pa drone scorer from Phase 12). The tonic is the reference point for the whole 360-dimensional feature (every value is a cents offset from Sa), so a different detected tonic shifts the entire vector. The model expects the March pipeline; inference had drifted to the May pipeline.
+
+### Realigning instead of retraining
+
+There were three ways to fix this: retrain the model on the current pipeline, deploy the much better Phase 13 TDMS model, or realign the inference pipeline back to what the deployed model already expects. I chose to realign, because it is provable and free. I checked out the March 22 version of `predict.py` (the last before the training features were saved) and confirmed it reproduces the stored features exactly.
+
+| Extraction | Cosine vs stored | Kalyani prediction |
+|---|---|---|
+| March pipeline | 1.000 | Kalyāṇi 97.3% |
+| current (drifted) pipeline | 0.439 | Behāg 67.5% |
+
+The differences were small and surgical: peak normalization instead of RMS, a 60 second default analysis window, and the top-5 peakedness tonic detector instead of sa_pa. The current `_detect_tonic` still supported a `peakedness` scorer, so I pinned the v1 path to `_detect_tonic(voiced, k=5, scorer="peakedness")` and left the sa_pa default in place for the offline eval scripts that depend on it. After the change, the realigned pipeline matched the trained features at cosine 1.000 and predicted correctly on every video I tested: Tōḍi 99.7 percent, Bhairavi 98.7 percent, Kalyāṇi 97.3 percent, Madhyamāvati 94.0 percent. The fix applies to all three input paths (record, upload, and YouTube), because they all build features through the same function.
+
+I want to be precise about what this does and does not do. Realignment restores v1 to its true capability, which the honest Phase 6 re-baseline puts near 8 percent top-1 on novel audio. It does not turn v1 into a good model on arbitrary input. It removes a bug that was making v1 far worse than its real, already-modest ceiling. The genuine accuracy win is still deploying the Phase 13 TDMS model, which stays the headline next step.
+
+### A second skew: the wrong part of the recording
+
+With the pipeline realigned, I went to precompute the example predictions, and most of them were still wrong, but in a new way. The live YouTube path downloaded the first 90 seconds of a video, and the opening of a concert (tuning, sparse opening phrases, sometimes an announcement or applause) does not characterize the raga. The training data, by contrast, sampled a 90 second window one third of the way into each recording (`download_youtube_data.py`). So the model was trained on developed alapana and asked to predict on intros. The same videos that predicted correctly from their middle window predicted Sencuruṭṭi, Varāḷi, and Kēdāragauḷa from their first 60 seconds. I changed the live `/predict-youtube` path to sample the same one-third-in window the model was trained on: it runs a metadata-only duration probe (which is not subject to the media-CDN throttle, so it usually succeeds even when media downloads are being dropped), computes the start offset, and falls back to the opening window if the probe fails.
+
+### Making the demo reliable for free: precomputed examples
+
+The arbitrary-link box will always be best effort on a datacenter IP. But the demo can be made reliable for free. Because the model is public on Hugging Face Hub and the feature pipeline is in the repo, I can run the exact inference pipeline from my own laptop (a residential IP, where yt-dlp works fine), compute predictions for a curated set of videos once, and commit the results. `backend/src/warm_youtube_examples.py` does this: it downloads the same middle window the live endpoint uses, runs the realigned single-window extraction, keeps only the videos that predict their correct raga, and writes `backend/data/youtube_examples.json`. The backend loads that file at startup and seeds its in-memory result cache with it, so a click on one of these examples (or a pasted link to the same video) returns instantly and correctly regardless of the server's IP reputation. A new `/youtube-examples` endpoint serves the list, and the frontend renders them as "Try one:" chips under the link box. The shipped set is seven recordings, all predicting their correct raga: Kalyāṇi, Bhairavi, Tōḍi, Kāpi, Harikāmbhōji, Madhyamāvati, and Mōhanaṁ. These are recordings from the training set, chosen to show the end-to-end feature working reliably, not as a held-out accuracy claim; the honest accuracy numbers are the Phase 6 and Phase 13 figures.
+
+### The dual-base deploy
+
+One complication in shipping all this: the live Space had been running a backend weeks behind the GitHub repo, because the Space is not auto-linked to GitHub and deploys are manual. The Space's `api/main.py` predated the entire Phase 13 TDMS and Essentia stack. Overlaying my local `main.py` would have first-time-deployed untested Essentia code and risked breaking the working `/predict`. So I applied the YouTube-examples changes and the realigned `predict.py` onto the Space's own base, cloning the Space repo and overlaying only the changed files, keeping the Space on its known-good foundation while the GitHub repo carries the complete Phase 13 version. The two are still divergent by design; a deliberate full sync, with Essentia tested on the Space first, remains future work. Along the way I also fixed a documentation bug: the README header and `CLAUDE.md` both listed the live API as a Railway URL, but that Railway trial ended months ago and the URL is dead. The frontend always called the Hugging Face Space, so the site was never affected, but the docs were wrong and now point at the Space.
+
 ---
 
 ## Accuracy and Model Performance
@@ -900,9 +956,9 @@ Every model I have shipped is either a histogram (v1) or a nearest-neighbor look
 
 Phases 4 through 13 ruled several things out, and I am recording them here so this section stops re-accumulating them. From-scratch CNNs (Phase 4) and general-audio foundation-model embeddings (AST, Phase 5) both overfit recording-level confounders on 689 recordings and scored near chance. Data augmentation on the existing feature vectors destroys the normalized-histogram structure and has lowered accuracy every time I have tried it. The bidirectional octave fold I once wrote into this very section as the plan turned out to be a non-lever: the TDMS feature is octave-folded, so a tonic that is wrong by a full octave produces a byte-identical surface (Phase 12 proved this directly). And the learned tonic re-ranker regressed end to end (Phase 11b) because it was trained on a different slice of each recording than production queries. The lever that actually moved the needle was running the dataset's own expert algorithms, Melodia and the Gulati tonic, at inference instead of reimplementing pitch and tonic detection by hand.
 
-**Make the YouTube link reliable, or retire it**
+**Make the arbitrary YouTube link reliable**
 
-The YouTube button is best effort today because the Hugging Face Space runs on a shared datacenter IP that YouTube throttles (the full story is in the Obstacles section). The only way to make it reliable for arbitrary visitors is to route yt-dlp through a residential proxy, which is about a ten-line change (a `--proxy` flag in the fetch) but costs a few dollars a month. The most promising free path is in-browser tab-audio capture with `getDisplayMedia`, which records the audio the YouTube player is already playing in the user's own browser, so it avoids both the datacenter IP block and the CORS wall that blocks a direct browser download (I confirmed that wall by testing: googlevideo.com returns no `Access-Control-Allow-Origin` header). The catch is that tab-audio capture is Chrome and Edge only, needs a share-tab permission click, and captures in real time, so it would ship alongside the existing Upload fallback for other browsers. A smaller free win that is already live: the backend keeps a per-video result cache in memory (keyed by video ID), so a link that has worked once comes back in under a second on the same Space run. Persisting that cache to Supabase would let those fast hits survive Space restarts instead of resetting on every redeploy. If none of these feels worth it, the honest alternative is to drop the link box and rely on file upload, which always works.
+Phase 14 made the YouTube feature work reliably for the curated examples (precomputed predictions seeded into the cache, served instantly regardless of the server IP) and improved arbitrary links as much as a free datacenter IP allows: yt-dlp is current again, the fetch now samples the trained middle window instead of the unrepresentative opening, and the feature pipeline is realigned so a successful fetch actually returns the right raga. What is still left is making an arbitrary, never-seen link reliable, which the datacenter IP throttle prevents. The only complete fix is routing yt-dlp through a residential proxy, about a ten-line change (a `--proxy` flag in the fetch) that costs a few dollars a month. The most promising free path is in-browser tab-audio capture with `getDisplayMedia`, which records the audio the YouTube player is already playing in the user's own browser, so it sidesteps both the datacenter IP block and the CORS wall that blocks a direct browser download (I confirmed that wall by testing: googlevideo.com returns no `Access-Control-Allow-Origin` header). The catch is that tab-audio capture is Chrome and Edge only, needs a share-tab permission click, and captures in real time, so it would ship alongside the existing Upload fallback for other browsers. The in-memory result cache (keyed by video ID) means any link that works once comes back in under a second on the same Space run; persisting it to Supabase would let those fast hits and the seeded examples survive Space restarts instead of being rebuilt from the committed JSON on each boot.
 
 **Wire up automatic Space deploys**
 

@@ -180,6 +180,14 @@ def health():
 def list_ragas():
     return {"ragas": CLASSES, "count": len(CLASSES)}
 
+@app.get("/youtube-examples")
+def youtube_examples():
+    """Curated example videos whose predictions are precomputed and cached, so
+    the frontend can offer 'try one of these' links that always work even when
+    YouTube is throttling the server's datacenter IP. YT_EXAMPLES is populated
+    at startup (see _load_youtube_examples)."""
+    return {"examples": YT_EXAMPLES}
+
 @app.post("/predict")
 async def predict_raga(
     file: UploadFile = File(...),
@@ -360,6 +368,42 @@ _YT_CACHE_MAX = 256
 _yt_fetch_lock = threading.Lock()
 
 
+def _load_youtube_examples():
+    """Curated example videos with predictions precomputed offline from a
+    residential IP (src/warm_youtube_examples.py). YouTube throttles this
+    Space's datacenter IP, so an open 'paste any link' box fails intermittently
+    for first-time visitors. These examples are served straight from the cache,
+    so the demo always works regardless of the server's IP reputation. Returns
+    a list of {url, title, raga} for the frontend's example buttons."""
+    path = os.path.join(BASE_DIR, "data", "youtube_examples.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        print(f"No YouTube examples loaded ({exc!r}). The example buttons will be empty.")
+        return []
+    listing = []
+    for vid, entry in data.items():
+        try:
+            payload = entry["payload"]
+            # Seed the cache under the same (video_id, tonic) key the endpoint
+            # uses, so a click (or pasted link to the same video) is an instant hit.
+            _YT_CACHE[(vid, None)] = payload
+            listing.append({
+                "url": entry["url"],
+                "title": entry["title"],
+                "raga": payload["top_raga"],
+            })
+        except (KeyError, TypeError) as exc:
+            # One malformed entry shouldn't take down startup.
+            print(f"Skipping malformed YouTube example {vid!r}: {exc!r}")
+    print(f"Loaded {len(listing)} precomputed YouTube examples.")
+    return listing
+
+
+YT_EXAMPLES = _load_youtube_examples()
+
+
 def _youtube_video_id(url: str) -> Optional[str]:
     """Extract the canonical video id from a YouTube URL so cache hits work
     regardless of extra query params (playlist, timestamp, si=...)."""
@@ -411,6 +455,25 @@ def _do_youtube_fetch(url, override):
     # limited. File upload still does full multi-segment averaging for accuracy.
     last_stderr = ""
 
+    # Sample a window 1/3 into the recording — the window the model was trained on
+    # (download_youtube_data.py). The opening of a concert (tuning, sparse alapana,
+    # applause) does not characterize the raga, so the old first-90s window
+    # predicted the wrong raga even after the feature pipeline was realigned. A
+    # metadata-only duration probe is not subject to the media-CDN throttle, so it
+    # usually succeeds even when downloads are being dropped; fall back to the
+    # opening window if it fails.
+    seg_start = 0
+    try:
+        probe = subprocess.run(
+            _ytdlp_base([]) + ["--skip-download", "--print", "%(duration)s", url],
+            capture_output=True, text=True, timeout=30)
+        if probe.returncode == 0:
+            dur = int((probe.stdout or "0").strip().split("\n")[-1])
+            if dur > 180:
+                seg_start = max(60, dur // 3)
+    except Exception:
+        seg_start = 0
+
     with tempfile.TemporaryDirectory() as tmpdir:
         output_template = os.path.join(tmpdir, "audio.%(ext)s")
         download_ok = False
@@ -419,7 +482,7 @@ def _do_youtube_fetch(url, override):
                 "-x", "--audio-format", "wav",
                 "-o", output_template,
                 # yt-dlp clamps the window to the real length for short clips.
-                "--download-sections", f"*0-{SEGMENT_LEN}",
+                "--download-sections", f"*{seg_start}-{seg_start + SEGMENT_LEN}",
                 url,
             ]
             try:
