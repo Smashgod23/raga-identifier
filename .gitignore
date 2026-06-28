@@ -39,3 +39,6 @@ __pycache__/
 __MACOSX/
 # Raw audio dataset — lives outside repo at ~/raga-data-audio/ so never committed
 raga-data-audio/
+
+# experiment caches (large)
+backend/data/*.npz

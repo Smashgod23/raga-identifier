@@ -889,6 +889,42 @@ The arbitrary-link box will always be best effort on a datacenter IP. But the de
 
 One complication in shipping all this: the live Space had been running a backend weeks behind the GitHub repo, because the Space is not auto-linked to GitHub and deploys are manual. The Space's `api/main.py` predated the entire Phase 13 TDMS and Essentia stack. Overlaying my local `main.py` would have first-time-deployed untested Essentia code and risked breaking the working `/predict`. So I applied the YouTube-examples changes and the realigned `predict.py` onto the Space's own base, cloning the Space repo and overlaying only the changed files, keeping the Space on its known-good foundation while the GitHub repo carries the complete Phase 13 version. The two are still divergent by design; a deliberate full sync, with Essentia tested on the Space first, remains future work. Along the way I also fixed a documentation bug: the README header and `CLAUDE.md` both listed the live API as a Railway URL, but that Railway trial ended months ago and the URL is dead. The frontend always called the Hugging Face Space, so the site was never affected, but the docs were wrong and now point at the Space.
 
+## Phase 15: Chasing Real Accuracy, Two Dead Ends, and a Sequence-Model Breakthrough
+
+After Phase 14 the YouTube feature worked end to end, but I wanted to know the honest accuracy, so I measured it properly instead of trusting the old headline numbers. The results were humbling and they reset the whole project.
+
+### The honest numbers
+
+I rebuilt the comparison on audio, which is what a real user actually gives the app. The deployed v1 model scores about 17 percent top-1 on audio it has not seen (its old "97 percent" on the example videos was memorization, since those exact recordings were in its training set). TDMS is much better, but its 75.6 percent is in-distribution, measured on the CompMusic recordings its templates come from. On novel YouTube recordings TDMS drops to about 50 percent top-1, with top-5 around 70 to 80 percent. So both models are benchmark-strong and weak on real-world audio. That gap, not the headline, is the real problem.
+
+### A setup win: Essentia runs on the Mac after all
+
+Every earlier note said Essentia could not run on my Apple Silicon Mac, so all the TDMS work had been done on the Linux Space via precomputed features. While setting up to attack the accuracy problem I checked again and found Essentia now ships an arm64 macOS wheel. One pip install and the whole pipeline ran locally, which meant I could build templates, run inference, and validate without Docker, a cloud box, or uploads. That unblocked everything that followed.
+
+### Dead end one: more data, but noisy data
+
+My first idea was the obvious one. The template index only held CompMusic recordings, so novel YouTube performances had nothing close to match against. I built TDMS templates for 190 YouTube recordings covering all 40 ragas and added them to the index. It did not help. On the realistic query test, top-1 actually fell from 50 to 43.8 percent. The reason is that the YouTube data is noisy two ways: the tonic comes from Essentia (about 85 percent right, not expert-verified) and the labels come from a search query, not an expert. With many noisy templates in the index, a query matches a wrong-raga template more often than it gains from a right one. I also tried keeping only the 108 templates that the CompMusic index already agreed with, hoping to filter the noise, and that was exactly neutral, because those templates are redundant with what is already there. Dirty data made it worse, not better.
+
+### Dead end two: cleaning the audio
+
+If the problem is messy real-world audio, clean it. I ran Demucs source separation to isolate the lead voice from the tanpura drone, percussion, and audience before pitch extraction. This backfired hard: top-1 went from 50 to 25 percent, top-5 from 83 to 42. Two reasons. Demucs is trained on Western pop and rock, so its idea of a "vocal" mangles the gamakas, the pitch slides that actually define a raga. And it strips the tanpura drone, which is the exact signal Essentia's tonic detector relies on to find Sa. Remove the drone and the tonic detection degrades, and a wrong tonic poisons everything downstream. Off-the-shelf separation is the wrong tool for this music.
+
+### The real diagnosis
+
+Both dead ends share a lesson. The errors that remain are not random, they are allied-raga confusions: Kalyāṇi mistaken for Pūrvīkalyāṇi, Kāmbhōji for Harikāmbhōji, Śrī for Madhyamāvati. These pairs share the same scale. TDMS is a pitch-distribution model, so it sees which notes are used and for how long, but not the order they appear in. Two ragas with the same notes but different characteristic phrases look almost identical to it. A human expert tells them apart by the phrases and the gamakas, by the movement, which a distribution throws away. No amount of extra templates fixes a blind spot they all share.
+
+### The breakthrough: model the sequence, not the distribution
+
+So I built the thing that models movement. Following the DeepSRGM idea from the literature, I trained a bidirectional LSTM with attention on the tonic-normalized pitch contour itself, the sequence of pitches over time rather than their histogram. I tokenized each recording's expert pitch track into 50-cent bins, dropped silence, downsampled, and sampled subsequences for training, with a recording-aware split so no recording leaked between train and test.
+
+It worked. An untuned first pass already hit 78.8 percent top-1, beating TDMS. Adding attention pooling and a wider LSTM and training longer pushed it to 89.2 percent plus or minus 1.2 top-1 and 97.9 percent plus or minus 1.2 top-5, averaged over three recording-aware splits. That is about 14 points of top-1 over TDMS on the same data, and it confirms the diagnosis directly: the information that distinguishes allied ragas is in the order, and a sequence model captures it.
+
+I am keeping the caveats honest. This number is in-distribution and on expert pitch tracks. For deployment the model has to be retrained on Essentia-extracted pitch so training matches what runs at inference, which will cost some accuracy, and novel real-world audio will face the same out-of-distribution gap that hurt TDMS. So this is not yet a deployed 89 percent. But it is the first lever that actually moves top-1, it moves it a lot, and it points the rest of the work in a clear direction.
+
+### Next on accuracy
+
+Retrain the sequence model on Essentia pitch so it is deployable, measure it honestly on novel audio, and most likely combine it with TDMS, since a distribution model and a sequence model fail in different ways and an ensemble of the two should be stronger than either. Deploying it means putting PyTorch on the Space, which grows the image, so that needs checking against the Space's limits. One technical note for later: PyTorch's multi-layer LSTM is pathologically slow on Apple's MPS backend, so the local training uses a single layer or the CPU.
+
 ---
 
 ## Accuracy and Model Performance

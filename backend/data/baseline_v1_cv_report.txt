@@ -1,7 +1,7 @@
 ========================================================================
 v1 baseline (sklearn MLP on 360-D pitch features), 5-fold CV
 Dataset: CompMusic Carnatic, 480 recordings × 40 ragas
-Seeds: 5  |  Folds: 5  |  Elapsed: 3.4s
+Seeds: 5  |  Folds: 5  |  Elapsed: 3.3s
 ========================================================================
 
 HEADLINE
