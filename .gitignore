@@ -42,3 +42,5 @@ raga-data-audio/
 
 # experiment caches (large)
 backend/data/*.npz
+
+backend/data/*.pt
