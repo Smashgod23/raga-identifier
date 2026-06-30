@@ -20,7 +20,10 @@ import numpy as np
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(BASE, "data")
 DATASET = os.path.join(DATA, "RagaDataset", "Carnatic")
-CACHE = os.path.join(DATA, "deepsrgm_seqs.npz")
+# Default cache is the expert-pitch contours; pass a path as argv[1] to train on
+# a different cache (e.g. data/deepsrgm_essentia_seqs.npz for the deployable,
+# Essentia-pitch model).
+CACHE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(DATA, "deepsrgm_seqs.npz")
 
 # Tokenization: tonic-normalized cents, 50-cent bins (2 per semitone -> keeps some
 # gamaka detail), over a 3-octave range [-1200, +2400] cents. Silence dropped.
