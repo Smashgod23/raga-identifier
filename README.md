@@ -929,6 +929,46 @@ So I have not hit 80 percent top-1 on novel audio, and I want to be plain about 
 
 Three levers remain, in order of expected payoff. First, a better pitch tracker, since the 89-versus-78 gap shows about eleven points are sitting in pitch quality alone; a neural tracker like CREPE or a Carnatic-tuned extractor is the next thing to try. Second, an ensemble of the sequence model and TDMS, because a distribution model and a sequence model fail in different ways and combining them should beat either. Third, cleaner labels, since auto-searched YouTube labels both cap the training value of new data and make the novel-audio number look worse than it is. After that, deploying the sequence model means putting PyTorch on the Space, which grows the image, so that needs checking against the Space's limits. One technical note for later: PyTorch's multi-layer LSTM is pathologically slow on Apple's MPS backend, so the local training uses a single layer or the CPU, and the full training tensor has to stay on the CPU with batches moved to the device one at a time or unified memory runs out.
 
+## Phase 16: What Became of Those Three Levers, a Hidden Win in the Data, and Teaching the Model to Doubt Its Tonic
+
+Phase 15 ended with a plan: better pitch tracker, ensemble with TDMS, cleaner labels. This phase is the story of how the first two died on contact with measurement, how the real gains came from places I did not plan, and how the honest novel-audio number climbed from the high 50s to just under 70.
+
+### The pitch tracker lever dies in minutes
+
+Before committing hours to re-extracting every contour with CREPE, I ran a cheap decisive test. The CompMusic recordings come with expert-corrected pitch tracks, which means I could measure any tracker against ground truth directly: on frames the expert marks voiced, how often is the tracker within 50 cents? Essentia's Melodia agreed with the expert 94 to 98 percent of the time on the recordings I sampled. CREPE managed 88 to 96, worse on every single one. CREPE is a monophonic tracker, and concert audio with a tanpura drone and a violin shadowing the voice is not monophonic. Same failure class as Demucs in Phase 15. The eleven points sitting in the expert-versus-Essentia gap are not from a better algorithm, they are from a human fixing octave errors and interpolating silences by hand, and no off-the-shelf tracker recovers that. Ruled out in minutes instead of hours, which I count as a win.
+
+### The ensemble that evaporated under audit
+
+The DeepSRGM plus TDMS ensemble looked like a win at first: sweeping the fusion weight showed a best blend at 61.8 percent top-1 versus 57.9 for the sequence model alone. Then the review I run on every commit flagged the flaw: I had picked the fusion weight on the same 76 recordings I was reporting on. At a fixed weight chosen without looking at the test set, the gain was basically zero. I walked the claim back and kept the lesson, which mattered twice later in this phase: any knob tuned on the evaluation set is not a result, it is a fit.
+
+### Was the data really exhausted?
+
+At this point I told Pratham the remaining gap was a data problem, and he pushed back: he had spent a long time collecting that YouTube data, was it really at its limit? Fair challenge, and it exposed a gap in my testing. The YouTube recordings had only ever been used as TDMS nearest-neighbor templates, where one mislabeled neighbor poisons a prediction. A trained network averages over thousands of examples and tolerates label noise far better. So I extracted proper Essentia contours for 194 YouTube recordings and put them into DeepSRGM training. Raw, it was neutral to slightly negative, with huge seed variance, which is the signature of label noise. Filtered to the recordings the CompMusic-trained model already confirmed, it removed the harm but added nothing, because the recordings that pass the filter are the ones the model already gets right. Two more dead ends, honestly measured.
+
+### The hidden win: two pitch tracks of the same recording
+
+But the push to squeeze the existing data produced one more idea, and this one worked. I already had two versions of every CompMusic contour: the expert-corrected track and the Essentia track. Training on both, as if they were separate recordings with the same label, teaches the model that clean and noisy pitch extraction of the same performance are the same raga. That is invariance to pitch-extraction quality, learned from data I already had. Novel-audio top-1 jumped about ten points on the evaluation splits I was using then, and every seed agreed. It was the first big lift since the sequence model itself, and it cost nothing but a training run.
+
+### A rebaseline that took some shine off, and was still the right call
+
+The splits I had been using held out 69 YouTube recordings. Since the dual-pitch model never trains on YouTube at all, every one of the 194 recordings is a legitimate test case, so I moved the whole evaluation to all 194. The bigger test set cut the noise from about five points to about two, and it delivered some humility: the 68 I had been quoting was partly split luck. Honest dual-pitch singles land at 61 to 65, and averaging the softmax of three seeds, which converts that instability into accuracy, gives 64.4 top-1 and 82.0 top-5. That became the new baseline. On the same eval I also tried tempo resampling and small pitch jitter as training augmentation, and both were neutral. Not every invariance idea pays.
+
+### Teaching the model to doubt its tonic, attempt one: a faceplant with a treasure map
+
+The tonic detector anchors the whole representation, and it is right about 85 to 90 percent of the time. When it is wrong, it is wrong in musically predictable ways: it grabs Pa instead of Sa, or Ma, or lands an octave off. Because my tokens are linear in cents, each of those errors is exactly an integer shift of the token sequence. So at inference I tried seven shift hypotheses and let the ensemble's confidence pick. It was a disaster: top-1 dropped to 59.8 and top-5 cratered to 67.5. The autopsy found two causes. Max-softmax confidence is not comparable across shifted inputs, and my np.clip at the vocabulary edges was piling out-of-range tokens into saturated walls that the model read as confidently held notes. The selector moved more than half the recordings off a detector that is right nine times out of ten.
+
+But the same run printed the number that defined the rest of the phase: for 83.5 percent of recordings, at least one of the seven hypotheses produced the correct answer. The gap between 64.4 actual and 83.5 potential meant the idea was right and only the selector was broken.
+
+### Attempt two: fold, gate, blend, and verify honestly
+
+Three fixes, all evaluation-side against the already-trained models. Out-of-range tokens now fold back by an octave instead of clipping, which is musically correct and kills the saturation artifact. The selector only abandons the detector's tonic when a hypothesis beats it by a clear confidence margin, which respects the fact that the detector is usually right. And when a hypothesis does win, the final distribution is a blend of the chosen frame and the detector's frame, so a wrong rescue cannot destroy the top-5 list. Along the way I also found that longer evaluation windows, 70 seconds of contour instead of 35, are worth 1.6 points by themselves.
+
+Because the margin and shift set are knobs, and I had already been burned by in-sample knobs once this phase, the headline comes from five-fold cross-validation: the config is chosen on four fifths of the recordings and scored on the held-out fifth, with plain no-correction in the config space so the method can lose honestly. It did not lose. Four of five folds picked the same config, and the pooled held-out result is 69.6 top-1 and 85.6 top-5, against a 66.0 and 82.0 baseline. The blend even beats the baseline on top-5, because folding a plausible alternative tonic into the tail of the distribution is real information.
+
+### Where that leaves the honest scorecard
+
+On novel real-world recordings the app has never seen, measured on all 194 of them: v1 sits at 17 percent top-1, TDMS at about 50, the dual-pitch sequence ensemble at 64.4, longer windows take it to 66.0, and tonic correction takes it to 69.6 top-1 with 85.6 top-5. Top-5 is now well past the 80 percent goal. Top-1 is not at 80 yet, and I will not pretend otherwise. The clearest remaining headroom is the roughly 13-point gap to the tonic oracle, which a learned hypothesis selector, trained with deliberately shifted negatives, should capture better than a confidence margin. Beyond that: the pad token is currently a real pitch value with no masking, which is a small representation flaw worth fixing, phrase-gap tokens are still unexplored, and none of this is deployed yet. The live site still runs v1 by deliberate choice, and it stays that way until the model behind it is genuinely good.
+
 ---
 
 ## Accuracy and Model Performance
