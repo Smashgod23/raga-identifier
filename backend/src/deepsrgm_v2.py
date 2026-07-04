@@ -101,13 +101,26 @@ def main():
             a = torch.softmax(s.attn(o).squeeze(-1), dim=1)
             return s.fc((o * a.unsqueeze(-1)).sum(1))
 
+    # Fingerprint of everything that must match for a checkpoint to be reusable.
+    # Guards against silently loading a stale .pt after a code/config change.
+    CONFIG_FP = f"vocab{VOCAB}-seq{SEQ_LEN}-per{PER_REC}-ep{EPOCHS}-emb96-lstm192x1bi-attn-fc192-ntrain{len(dual_s)}"
+
     def train_or_load(tag, seed, aug):
         path = os.path.join(DATA, f"deepsrgm_v2_{tag}_s{seed}.pt")
+        meta = path + ".json"
         net = Net().to(dev)
         if os.path.exists(path):
-            net.load_state_dict(torch.load(path, map_location=dev))
-            print(f"  [{tag} s{seed}] loaded checkpoint", flush=True)
-            return net
+            fp = None
+            if os.path.exists(meta):
+                try:
+                    fp = json.load(open(meta)).get("config_fp")
+                except Exception:
+                    fp = None
+            if fp == CONFIG_FP:
+                net.load_state_dict(torch.load(path, map_location=dev))
+                print(f"  [{tag} s{seed}] loaded checkpoint (fp ok)", flush=True)
+                return net
+            print(f"  [{tag} s{seed}] checkpoint fp mismatch/missing -> retraining", flush=True)
         torch.manual_seed(seed)
         rng = np.random.default_rng(1000 + seed)
         Xtr, ytr = subseqs(dual_s, list(range(len(dual_s))), dual_y, PER_REC, rng, aug=aug)
@@ -127,6 +140,8 @@ def main():
                 loss.backward(); opt.step()
             sched.step()
         torch.save(net.state_dict(), path)
+        with open(meta, "w") as f:
+            json.dump({"config_fp": CONFIG_FP, "tag": tag, "seed": seed}, f)
         print(f"  [{tag} s{seed}] trained + saved", flush=True)
         return net
 
