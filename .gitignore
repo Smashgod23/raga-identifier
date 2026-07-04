@@ -44,3 +44,4 @@ raga-data-audio/
 backend/data/*.npz
 
 backend/data/*.pt
+backend/data/*.pt.json

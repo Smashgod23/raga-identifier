@@ -12,8 +12,13 @@ distribution is 0.5*chosen + 0.5*detector-frame — keeps the top-1 rescue while
 protecting top-5 from a wrong hypothesis' garbage tail.
 
 Pure numpy on the cached per-shift distributions (data/v2_sweep_dists.npz).
+
+Disclosed caveat (review finding): the window length behind the cached dists
+(L=1600) was itself selected by top-1 on the full 194 in the sweep's part A, so
+the TTA delta is cross-validated but the absolute level inherits that one
+in-sample choice. Folding L into the CV config space needs per-shift dists at
+every L (extra model passes) and is future work.
 """
-import json
 import os
 
 import numpy as np
@@ -63,6 +68,11 @@ def score(dists, y, idxs):
 def main():
     z = np.load(os.path.join(DATA, "v2_sweep_dists.npz"))
     D = z["D"]
+    # The shift-set indices above are positions into the sweep's ALL_SHIFTS
+    # ordering; fail loudly if the cache was built with a different ordering.
+    expected_shifts = (0, 10, -10, 14, -14, 24, -24)
+    assert tuple(int(s) for s in z["shifts"]) == expected_shifts, \
+        f"cached shift ordering {tuple(z['shifts'])} != expected {expected_shifts}"
     yz = np.load(os.path.join(DATA, "deepsrgm_youtube_seqs.npz"), allow_pickle=True)
     y = yz["labels"]
     n = len(D)
