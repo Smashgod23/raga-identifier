@@ -77,10 +77,17 @@ def load_ensemble(tag="v3", seeds=(0, 1, 2), n_classes=40, with_frame_head=True)
 
     models = []
     for s in seeds:
+        sd = torch.load(os.path.join(DATA, f"deepsrgm_{tag}_s{s}.pt"),
+                        map_location=dev, weights_only=True)
+        # Build the net to match the checkpoint, then load STRICT: a silent
+        # partial load would leave random-initialized layers in production.
+        has_frame = any(k.startswith("frame.") for k in sd)
+        if with_frame_head and not has_frame:
+            raise ValueError(f"checkpoint s{s} has no frame head")
+        if not with_frame_head and has_frame:
+            sd = {k: v for k, v in sd.items() if not k.startswith("frame.")}
         net = Net().to(dev)
-        sd = __import__("torch").load(os.path.join(DATA, f"deepsrgm_{tag}_s{s}.pt"),
-                                      map_location=dev)
-        net.load_state_dict(sd, strict=False)  # frame head ignored when absent
+        net.load_state_dict(sd, strict=True)
         net.eval()
         models.append(net)
     return {"models": models, "dev": dev}
