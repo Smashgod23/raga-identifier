@@ -178,13 +178,32 @@ export default function App() {
     submitAudio(file, file.name)
   }
 
-  const submitAudio = async (blob, filename) => {
-    setError(null)
+  const buildAudioForm = (blob, filename) => {
     const form = new FormData()
     form.append('file', blob, filename)
     if (tonicHz) form.append('tonic_hz', tonicHz)
+    return form
+  }
+
+  const submitAudio = async (blob, filename) => {
+    setError(null)
     try {
-      const res = await axios.post(`${API_URL}/predict`, form)
+      let res
+      try {
+        // Primary: the v3 sequence model - ranked similar ragas, an honest
+        // "familiar or not" flag, and the audio segments behind the decision.
+        // Melody extraction plus an LSTM ensemble takes a while on the free
+        // server, so give it room before timing out.
+        res = await axios.post(`${API_URL}/predict-v3`, buildAudioForm(blob, filename), { timeout: 180000 })
+      } catch (v3Err) {
+        // If the sequence model is unavailable (503), fall back to the v1
+        // endpoint so a result still comes back instead of an error.
+        if (v3Err.response?.status === 503) {
+          res = await axios.post(`${API_URL}/predict`, buildAudioForm(blob, filename))
+        } else {
+          throw v3Err
+        }
+      }
       setPredictions(res.data)
       setAudioId(res.data.audio_id || '')
       setState('result')
@@ -388,6 +407,27 @@ export default function App() {
                 </div>
               )}
             </div>
+            {predictions.uncertainty && !predictions.uncertainty.familiar && (
+              <div style={styles.unfamiliarBanner}>
+                {predictions.uncertainty.note} Treat the ranking below as rough similarity, not identification.
+              </div>
+            )}
+            {predictions.evidence_segments?.length > 0 && (
+              <div style={styles.evidenceRow}>
+                <span style={styles.evidenceLabel}>Decided by what it heard at</span>
+                {predictions.evidence_segments.map((s) => {
+                  const fmt = (v) => {
+                    const t = Math.round(v)
+                    return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
+                  }
+                  return (
+                    <span key={`${s.start_s}-${s.end_s}`} style={styles.evidenceChip}>
+                      {fmt(s.start_s)}{'–'}{fmt(s.end_s)}
+                    </span>
+                  )
+                })}
+              </div>
+            )}
             {ragaInfo && (
               <div style={styles.detailsGrid}>
                 <div style={styles.detailPill}>
@@ -538,6 +578,10 @@ const styles = {
   ragaName: { fontFamily: 'Georgia, serif', fontSize: 42, fontWeight: 500, color: '#1e1e1e', letterSpacing: -0.5, lineHeight: 1.1, marginBottom: 8 },
   confidenceTag: { display: 'inline-block', background: '#eef6ee', color: '#5a8a5a', fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 20 },
   tagRow: { display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 },
+  unfamiliarBanner: { background: '#fdf6ec', border: '1px solid #ecd9b8', color: '#8a6d3b', fontSize: 13, lineHeight: 1.5, padding: '10px 14px', borderRadius: 10, marginBottom: 16 },
+  evidenceRow: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 16 },
+  evidenceLabel: { fontSize: 12, color: '#9a9082' },
+  evidenceChip: { background: '#f0ede8', color: '#5f574d', fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 20 },
   saTag: { display: 'inline-block', background: '#f5f2ee', color: '#9a9082', fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 20 },
   saTagSet: { display: 'inline-block', background: '#fdf0eb', color: '#c4826a', fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 20 },
   tonicPicker: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, background: '#fff', border: '1px solid #e8e2da', borderRadius: 12, padding: '14px 18px', marginBottom: 12 },
