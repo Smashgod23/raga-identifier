@@ -38,4 +38,19 @@ Protocol: 8/40 ragas held out (fixed rng(0) split, including Kalyani, Sankarabha
 
 Deployed calibration: energy < 3.43 (10th percentile of the novel set) flags a recording; flagged recordings measure 5% top-1 vs 72% unflagged.
 
-Last updated: 2026-07-20.
+## Component metric: tonic detection (CMD 480, ground truth = expert `.tonicFine`)
+
+Not a raga-accuracy number, tracked separately because tonic error is the single largest known contributor to the novel-audio gap (oracle tonic selection is worth about +10 points of top-1).
+
+| Detector | Accuracy (%) | Tolerance / window |
+|---|---|---|
+| Essentia TonicIndianArtMusic | 85.4 | +/-25 cents, octave-agnostic, 60 s middle window |
+| Chroma learned circular drone template | 85.2 | +/-20 cents, 5-fold CV held out, up to 20 min |
+| Chroma hand-written Sa+Pa template | 78.5 | +/-20 cents, no training |
+| sa_pa exact, K=15 | 70.2 | +/-25 cents, 60 s |
+| Chroma drone argmax | 55.6 | +/-20 cents, no training |
+| Peakedness, K=5 | 51.9 | +/-25 cents, 60 s |
+
+The chroma template ties Essentia rather than beating it, and needs far more audio to do it, so it is not a replacement. Whether the two fail on different recordings is untested and is the question that decides if this line is worth continuing.
+
+Last updated: 2026-07-28.

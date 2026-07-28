@@ -41,10 +41,14 @@ DATA = os.path.join(BASE, "data")
 CHROMA_DIR = os.path.join(DATA, "chroma")
 REPORT = os.path.join(DATA, "chroma_gate_report.txt")
 
-N_CHROMA = 60
-BINS_PER_OCTAVE = 60
-FMIN_HZ = 65.40639132514966          # C2, matches preprocess_chroma.FMIN_NOTE
-CENTS_PER_BIN = 1200.0 / BINS_PER_OCTAVE
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import preprocess_chroma as pc  # noqa: E402  (path set above)
+
+# Derived from the extractor's own constants, never re-typed. If the extractor's
+# bin resolution or reference frequency ever changes, the tonic roll here follows
+# it instead of silently drifting out of alignment.
+N_CHROMA = pc.BINS_PER_OCTAVE
+CENTS_PER_BIN = 1200.0 / pc.BINS_PER_OCTAVE
 
 SEQ_LEN = 800                         # ~35 s at 22.73 fps
 PER_REC = 60                          # training windows per recording
@@ -56,7 +60,9 @@ SEEDS = (0, 1, 2)
 
 def tonic_bin(tonic_hz):
     """Which chroma bin the tonic falls in (circular, 0..59)."""
-    return int(round(1200.0 * np.log2(tonic_hz / FMIN_HZ) / CENTS_PER_BIN)) % N_CHROMA
+    import librosa
+    fmin = librosa.note_to_hz(pc.FMIN_NOTE)
+    return int(round(1200.0 * np.log2(tonic_hz / fmin) / CENTS_PER_BIN)) % N_CHROMA
 
 
 def load_recordings():

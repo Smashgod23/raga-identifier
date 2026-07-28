@@ -113,6 +113,18 @@ Plan, with a gate so this does not become another dead end:
 
 What I expect. I do not expect the chroma model to beat the pitch-token model outright. The token model gets a clean melodic line; chroma gets a blurrier picture with more in it. What I think is more likely, and more useful, is that the two fail on different recordings, in which case combining them helps, and that the drone channel improves tonic selection.
 
+Result so far, part one: the tonic detector (`src/chroma_tonic.py`). This is the cheap half and it is finished. Averaging the chromagram over a whole recording, weighted by frame energy, gives a pitch-class profile that should peak at Sa. Taking the plain loudest bin finds the annotated tonic only 55.6% of the time. Adding a term for the fifth above, which is what the second tanpura string usually sounds, takes it to 78.5%.
+
+Then the failure analysis paid off. The misses were not scattered. The largest single failure mode was predicting exactly 500 cents above the true tonic, 34 times out of 103 misses, with 700 cents the next most common at 22. Five hundred cents is the fourth, and a tanpura tuned Sa-Ma instead of Sa-Pa is a completely normal Carnatic configuration. My hand-written template could not represent it, and I could not fix it by adding a fourth term either, because the fourth above Pa lands back on Sa and the two hypotheses stay tangled.
+
+So I stopped guessing which intervals matter and learned them: one weight per pitch class relative to the candidate tonic, scored by rotating the profile so the candidate sits at index 0. Sixty parameters, softmax cross-entropy over the sixty candidate bins, 5-fold cross-validated so the number is held out. That reaches 73.5% exact and 85.2% within one bin (20 cents).
+
+And then the honest part. The Essentia tonic detector already in the pipeline gets 85.4% on the same 480 recordings, and it does that from a 60-second window while my chroma template reads up to 20 minutes. So the chroma tonic detector ties the existing one and costs more. It is not worth shipping as a replacement, and I have written it up that way in the leaderboard rather than quoting 85.2% as if it were a win.
+
+That does not close the question, though. The 10-point oracle gap is not asking for a marginally different detector, it is asking for better hypothesis selection. What matters is whether chroma is wrong on the same recordings Essentia is wrong on. If the errors are uncorrelated then using the chroma template to score Essentia's candidate list, instead of replacing it, should beat both. That is the next experiment and it is cheap.
+
+Result so far, part two: the sequence model gate is still training as I write this (about 45 minutes per seed, three seeds). I will add the number when it lands, including if it is bad.
+
 ### 2026-07-20: canonical results table
 
 Built the leaderboard as a canonical file in the repository, with explicit admission rules: a number only goes in the table if it was measured on the standard harness, the configuration was chosen by cross-validation and never tuned on the evaluation set, and deployed configurations stay labeled separately from research ones. Any session that produces a new benchmark number now updates the table automatically.
