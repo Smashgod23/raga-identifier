@@ -168,6 +168,12 @@ def learned_template(profiles, true_bins, folds=5, seed=0):
     sharing: sixty parameters total, trained with softmax cross-entropy.
 
     Evaluated with 5-fold cross-validation so the reported number is held out.
+
+    Caveat worth stating: the folds are recording-level but not artist-level.
+    If one performer appears in several recordings at their usual Sa, some of
+    that tonic is visible across the split. The effect can only inflate the
+    number, and the number already only ties Essentia, so it does not change the
+    conclusion. It would need fixing before anyone quoted this as a win.
     """
     import torch
 

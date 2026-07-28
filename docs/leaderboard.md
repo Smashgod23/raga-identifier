@@ -51,6 +51,6 @@ Not a raga-accuracy number, tracked separately because tonic error is the single
 | Chroma drone argmax | 55.6 | +/-20 cents, no training |
 | Peakedness, K=5 | 51.9 | +/-25 cents, 60 s |
 
-The chroma template ties Essentia rather than beating it, and needs far more audio to do it, so it is not a replacement. Whether the two fail on different recordings is untested and is the question that decides if this line is worth continuing.
+The chroma template ties Essentia rather than beating it, and needs far more audio to do it, so it is not a replacement. Its cross-validation folds are recording-level but not artist-level, so a performer's habitual Sa can be partly visible across the split; that can only inflate 85.2%, which reinforces the read that this is a tie at best. Whether the two fail on different recordings is untested and is the question that decides if this line is worth continuing.
 
 Last updated: 2026-07-28.

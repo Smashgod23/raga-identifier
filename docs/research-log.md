@@ -119,6 +119,8 @@ Then the failure analysis paid off. The misses were not scattered. The largest s
 
 So I stopped guessing which intervals matter and learned them: one weight per pitch class relative to the candidate tonic, scored by rotating the profile so the candidate sits at index 0. Sixty parameters, softmax cross-entropy over the sixty candidate bins, 5-fold cross-validated so the number is held out. That reaches 73.5% exact and 85.2% within one bin (20 cents).
 
+One caveat on my own number before I compare it. Those folds are recording-level but not artist-level, so if a performer shows up in several recordings at their usual Sa, some of that is visible across the split. It can only push 85.2% up, never down.
+
 And then the honest part. The Essentia tonic detector already in the pipeline gets 85.4% on the same 480 recordings, and it does that from a 60-second window while my chroma template reads up to 20 minutes. So the chroma tonic detector ties the existing one and costs more. It is not worth shipping as a replacement, and I have written it up that way in the leaderboard rather than quoting 85.2% as if it were a win.
 
 That does not close the question, though. The 10-point oracle gap is not asking for a marginally different detector, it is asking for better hypothesis selection. What matters is whether chroma is wrong on the same recordings Essentia is wrong on. If the errors are uncorrelated then using the chroma template to score Essentia's candidate list, instead of replacing it, should beat both. That is the next experiment and it is cheap.
