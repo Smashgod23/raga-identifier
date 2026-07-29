@@ -86,6 +86,26 @@ The other known limit is label quality. The 194 evaluation labels come from an a
 
 ## Log
 
+### 2026-07-29: the gate produces a number, and the chromagram hint turns out to be a pointer
+
+The chroma sequence model finished its first seed: **57.5% top-1, 86.2% top-5** on the in-distribution split, against the pitch-token model's 89.2 / 97.9 on the identical protocol. Two more seeds are running for a proper mean.
+
+That is a split decision and I want to be precise about it. It is nothing like the Phase 4 mel-spectrogram collapse at 11.5%, so the chromagram genuinely carries raga information, which was the question the gate was built to answer. But it is roughly 32 points below the pitch-token model on top-1, so chroma is not a replacement for what I already have. The training loss was still falling at epoch 30, so it may be undertrained on a schedule I copied from the token model specifically to keep the swap controlled.
+
+A detour worth recording because it cost most of an afternoon. The run slowed from 99 seconds per epoch to 1536, a 15x degradation, and my first instinct was that something was wrong with the model. It was not. The feature store held 877 MB, and on a 16 GB machine alongside two IDEs and a macOS update that had been running for fifteen hours, the system hit 11% free memory and 18 GB of swap. It was thrashing, not computing. Killing the job took free memory straight back to 70%, which told me my own footprint was a bigger contributor than I had assumed. I capped each recording to a centered 8000-frame window, which took the store to 421 MB, and epochs came back at 64 seconds. Loss at epoch 10 was 2.779 against 2.766 for the uncapped run, so the cap cost nothing in learning. I disclosed the cap in the report anyway, because it means chroma draws windows from a smaller pool than the token baseline does. That can only disadvantage chroma, never inflate it.
+
+Then Prof. Arora sent the MADHAV Lab outcomes page, and it recontextualized his original suggestion completely. Figure 1 of his group's 2025 paper, "Recognizing Ornaments in Vocal Indian Art Music with Active Annotation" (Kumar, Singh, Arora), is chromagram and pitch-contour representations of six ornaments. So "try chromagrams" was not generic advice. It was a pointer at using chromagrams to see ornamentation.
+
+That lands exactly on the ceiling I already measured. My notes have said for weeks that the top-1 plateau is allied-raga confusion, because pitch-distribution models carry no phrase or gamaka order. His paper states the same thing from the other direction: in Indian art music, ornaments are essential to accurate raga rendition. The six his team annotates are Kaṇ (grace note), Mīnd (glide), Murkī (trill), Nyās svar (resting note), Andolan (oscillation), and Gamak. Their method is a Temporal Convolutional Network with a chunking scheme that preserves ornament boundaries, beating a CRNN baseline.
+
+I also worked through whether his lab's data solves my data problem, and I do not think it does. ROD is 212 files, 4.08 hours, two singers, four Hindustani ragas, recorded as isolated clean vocals. HAR is 523 files, 6.84 hours, two female vocalists, Hindustani, with 10 ms-hop f0 annotations. Combined that is about 11 hours against the 92.1 hours of Carnatic audio I already have across 480 recordings and many artists. Neither can contribute a single training example for my 40 Carnatic classes, because Hindustani ragas are a different set. And two singers per dataset is the opposite of the artist diversity that novel-audio generalization needs.
+
+There is a sharper reason to be careful here. ROD is isolated studio vocals and my real input is polyphonic concert audio, and this project has already been burned twice by exactly that mismatch: Demucs, trained on Western music with a clean-voice assumption, took top-1 from 50% to 25%, and CREPE, a monophonic tracker, followed Carnatic pitch worse than Melodia on concert recordings. An ornament detector trained on four hours of clean solo Hindustani vocals has the same shape of risk.
+
+So my read is that ROD's value is as a method rather than as data: train an ornament detector, then use ornament features to separate allied ragas. That attacks representation, which is the real bottleneck, rather than volume, which is not. Worth noting that the paper also evaluates on a separate manually annotated set of Indian classical concert recordings, and that set is the one that would actually tell me whether ornament detection survives contact with real concert audio. It is not on the outcomes page, so I want to ask about it.
+
+Two questions for Prof. Arora, then: can I get access to ROD, which is restricted on Zenodo, and is the concert-recording evaluation set available too? I would also value his view on whether the ornament vocabulary transfers from Hindustani to Carnatic, where the gamaka taxonomy is different and richer.
+
 ### 2026-07-28: acting on the chromagram and spectrogram suggestion
 
 Where the suggestion landed. Prof. Vipul suggested trying chromagrams or spectrograms. Two of those have already been tried and failed, which is worth stating up front so the record is honest: a mel-spectrogram CNN from scratch got 11.46%, and frozen AST spectrogram-transformer embeddings got 3.12%. Both failed the same way, by learning concert identity instead of raga identity. Raw spectrograms carry the singer's timbre, the room, and the microphone, and with only 384 training recordings that is the easiest signal for a model to latch onto.
@@ -147,7 +167,9 @@ Two bugs surfaced in live testing and were fixed: microphone recordings arrive a
 
 ## Open questions and next steps
 
-- Does the chromagram representation clear the in-distribution gate?
+- Ornamentation as the route past the allied-raga plateau, using ROD as a method rather than as data. Blocked on access, and on whether an ornament detector trained on clean solo vocals survives polyphonic concert audio.
+- Saraga Carnatic (36.3 hours, 168 recordings, 19 concerts, multitrack stems) as a possible source of additional Carnatic audio. Multitrack is interesting given that off-the-shelf source separation already failed here, though 19 concerts is thin on artist diversity.
+- Does the chromagram representation clear the in-distribution gate? Seed 0 says 57.5 / 86.2; two more seeds running.
 - Expert-verified labels for the evaluation set. The current labels come from automated search, and I believe some of the residual 30% error is label noise rather than model error. This is the single change most likely to make every other number more trustworthy.
 - Explicit rest and gap tokens. The current tokenization drops silence entirely, which means phrase boundaries are invisible to the model, and phrase structure is a large part of what distinguishes allied ragas.
 - A two-stage melakarta classifier: predict the parent scale first, then the raga within it.
