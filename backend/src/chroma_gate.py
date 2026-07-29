@@ -40,6 +40,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(BASE, "data")
 CHROMA_DIR = os.path.join(DATA, "chroma")
 REPORT = os.path.join(DATA, "chroma_gate_report.txt")
+# Each seed costs about 45 minutes. Completed seeds are cached here and skipped
+# on a rerun, so an interrupted run resumes instead of starting over.
+SEED_CACHE = os.path.join(DATA, "chroma_gate_seeds.json")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import preprocess_chroma as pc  # noqa: E402  (path set above)
@@ -225,11 +228,23 @@ def main():
     mb = sum(f.nbytes for f in feats) / (1024 ** 2)
     print(f"  {len(feats)} recordings in memory, {mb:.0f} MB", flush=True)
 
-    t1s, t5s = [], []
+    done = {}
+    if os.path.exists(SEED_CACHE):
+        done = {int(k): v for k, v in json.load(open(SEED_CACHE)).items()}
+        if done:
+            print(f"  resuming, already have seeds {sorted(done)}", flush=True)
+
     for s in SEEDS:
-        a, b = train_eval(feats, labels, s)
-        t1s.append(a)
-        t5s.append(b)
+        if s in done:
+            print(f"[seed {s}] cached: top-1 {done[s][0]:.1f}%  "
+                  f"top-5 {done[s][1]:.1f}%", flush=True)
+            continue
+        done[s] = list(train_eval(feats, labels, s))
+        with open(SEED_CACHE, "w") as f:
+            json.dump({str(k): v for k, v in done.items()}, f, indent=2)
+
+    t1s = [done[s][0] for s in SEEDS]
+    t5s = [done[s][1] for s in SEEDS]
 
     lines = [
         "Phase 16 chroma gate (in-distribution, CMD 480)",
