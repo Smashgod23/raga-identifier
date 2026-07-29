@@ -222,17 +222,46 @@ def train_eval(feats, labels, seed):
     return t1 / m * 100, t5 / m * 100
 
 
+def config_fingerprint():
+    """Every knob that changes what a seed's number MEANS.
+
+    Cached results are only reusable if all of these match. Without this the
+    cache is keyed on seed alone, so editing the window length or the epoch
+    count would silently reuse the old config's numbers and the report would
+    present them as the new config's. Same fingerprinting convention the v3
+    selector checkpoints use.
+    """
+    return {"seq_len": SEQ_LEN, "per_rec": PER_REC, "eval_windows": EVAL_WINDOWS,
+            "epochs": EPOCHS, "batch": BATCH, "n_chroma": N_CHROMA,
+            "bins_per_octave": pc.BINS_PER_OCTAVE, "hop": pc.HOP, "sr": pc.SR}
+
+
+def load_seed_cache():
+    """Return cached per-seed results, or {} if absent, corrupt, or stale."""
+    if not os.path.exists(SEED_CACHE):
+        return {}
+    try:
+        with open(SEED_CACHE) as f:
+            blob = json.load(f)
+        if blob.get("fingerprint") != config_fingerprint():
+            print("  seed cache was written under a different config, "
+                  "ignoring it and recomputing", flush=True)
+            return {}
+        return {int(k): v for k, v in blob["seeds"].items()}
+    except (ValueError, KeyError, TypeError) as e:
+        print(f"  seed cache unreadable ({e}), recomputing", flush=True)
+        return {}
+
+
 def main():
     print(f"[{time.strftime('%H:%M:%S')}] loading chroma cache...", flush=True)
     feats, labels = load_recordings()
     mb = sum(f.nbytes for f in feats) / (1024 ** 2)
     print(f"  {len(feats)} recordings in memory, {mb:.0f} MB", flush=True)
 
-    done = {}
-    if os.path.exists(SEED_CACHE):
-        done = {int(k): v for k, v in json.load(open(SEED_CACHE)).items()}
-        if done:
-            print(f"  resuming, already have seeds {sorted(done)}", flush=True)
+    done = load_seed_cache()
+    if done:
+        print(f"  resuming, already have seeds {sorted(done)}", flush=True)
 
     for s in SEEDS:
         if s in done:
@@ -241,7 +270,9 @@ def main():
             continue
         done[s] = list(train_eval(feats, labels, s))
         with open(SEED_CACHE, "w") as f:
-            json.dump({str(k): v for k, v in done.items()}, f, indent=2)
+            json.dump({"fingerprint": config_fingerprint(),
+                       "seeds": {str(k): v for k, v in done.items()}},
+                      f, indent=2)
 
     t1s = [done[s][0] for s in SEEDS]
     t5s = [done[s][1] for s in SEEDS]
