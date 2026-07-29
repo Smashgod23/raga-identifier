@@ -24,6 +24,13 @@ Inputs are the .npz files written by preprocess_chroma.py. Tonic normalization
 happens here at load time, as a circular roll of the 60-bin axis so that bin 0
 is always Sa.
 
+DISCLOSED DEVIATION from "identical except the input": each recording is capped
+to a centered MAX_FRAMES window so the feature store fits in RAM on a 16 GB
+machine. The poc samples its windows from the full contour. Window *content* is
+unchanged (both models see 800 frames at a time) but chroma draws from a smaller
+pool of start positions, so it sees less of each recording. This can only
+disadvantage chroma, so it does not inflate the comparison.
+
 Run from backend/:
   source venv/bin/activate
   python src/chroma_gate.py
@@ -55,6 +62,12 @@ CENTS_PER_BIN = 1200.0 / pc.BINS_PER_OCTAVE
 
 SEQ_LEN = 800                         # ~35 s at 22.73 fps
 PER_REC = 60                          # training windows per recording
+# Cap the frames held per recording. Uncapped this holds ~880 MB, which on a
+# 16 GB machine pushes the whole system into swap and slowed epochs from 99 s to
+# 1500 s. A centered 8000-frame window is ~5.9 minutes, still 7200 distinct
+# start positions for 800-frame windows, and the model never sees more than
+# SEQ_LEN at a time anyway. Costs window diversity, not window content.
+MAX_FRAMES = 8000
 EVAL_WINDOWS = 20
 EPOCHS = 30
 BATCH = 256
@@ -100,6 +113,13 @@ def load_recordings():
             continue
 
         ch = np.roll(ch, -tonic_bin(float(z["tonic"])), axis=1)
+
+        # Centered cap, matching the middle-window convention the contour
+        # builder uses. Applied before z-scoring so the energy statistics come
+        # from the frames actually kept.
+        if len(ch) > MAX_FRAMES:
+            mid, half = len(ch) // 2, MAX_FRAMES // 2
+            ch, en = ch[mid - half: mid + half], en[mid - half: mid + half]
 
         sd = en.std()
         en = (en - en.mean()) / (sd if sd > 1e-6 else 1.0)
@@ -233,6 +253,7 @@ def config_fingerprint():
     """
     return {"seq_len": SEQ_LEN, "per_rec": PER_REC, "eval_windows": EVAL_WINDOWS,
             "epochs": EPOCHS, "batch": BATCH, "n_chroma": N_CHROMA,
+            "max_frames": MAX_FRAMES,
             "bins_per_octave": pc.BINS_PER_OCTAVE, "hop": pc.HOP, "sr": pc.SR}
 
 
@@ -281,6 +302,10 @@ def main():
         "Phase 16 chroma gate (in-distribution, CMD 480)",
         "Controlled swap of deepsrgm_poc.py: same split, same windows, same",
         "architecture, same schedule. Only the input representation differs.",
+        "",
+        f"Disclosed deviation: recordings capped to a centered {MAX_FRAMES}-frame",
+        "window (RAM limit). Chroma draws windows from a smaller pool than the",
+        "poc does, which can only disadvantage chroma, never inflate it.",
         "",
         f"seeds {SEEDS}",
         f"top-1 per seed: {[round(x, 1) for x in t1s]}",
