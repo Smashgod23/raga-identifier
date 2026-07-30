@@ -73,7 +73,14 @@ SEQ_LEN = 800                         # ~35 s at 22.73 fps
 PER_REC = 60                          # training windows per recording
 EVAL_WINDOWS = 20
 EPOCHS = 30
-BATCH = 256
+BATCH = 256                           # optimizer step size, matches the poc
+# Backward-pass slice size. Intended as a pure memory knob: gradients accumulate
+# over BATCH//MICRO slices so the optimizer still sees the same 256-example step
+# and the math should be unchanged. The check is that the loss curve reproduces
+# the pre-accumulation run's 3.680 / 3.532 / 2.766 / 2.232 at epochs 1/5/10/15.
+# A training curve cannot validate a DATA-pipeline change, but it is exactly the
+# right instrument here, because this change touches only optimization.
+MICRO = 128
 SEEDS = (0, 1, 2)
 
 
@@ -244,16 +251,23 @@ def train_eval(feats, labels, seed):
         tot = 0.0
         for b in range(0, len(perm), BATCH):
             bi = perm[b:b + BATCH]
-            # Windows are gathered per batch and moved to the device one batch at
-            # a time. Holding the full window tensor on MPS blows memory.
-            xb = torch.tensor(gather([train_pairs[i] for i in bi], feats),
-                              device=dev)
-            yb = ytr_t[bi].to(dev)
             opt.zero_grad()
-            loss = lossf(net(xb), yb)
-            loss.backward()
+            # Gradient accumulation over MICRO-sized slices. The optimizer still
+            # steps once per BATCH examples, and scaling each slice's loss by its
+            # share of the batch makes the accumulated gradient identical to a
+            # single BATCH backward pass. Peak activation memory is what changes:
+            # backprop through 800 timesteps at BATCH=256 was the largest
+            # allocation in the process, and it is what got the run SIGKILLed
+            # while Spotlight was reindexing after an OS update.
+            for m in range(0, len(bi), MICRO):
+                mi = bi[m:m + MICRO]
+                xb = torch.tensor(gather([train_pairs[i] for i in mi], feats),
+                                  device=dev)
+                yb = ytr_t[mi].to(dev)
+                raw = lossf(net(xb), yb)
+                (raw * (len(mi) / len(bi))).backward()
+                tot += raw.item() * len(mi)
             opt.step()
-            tot += loss.item() * len(bi)
         sched.step()
         if (ep + 1) % 5 == 0 or ep == 0:
             print(f"    epoch {ep+1}/{EPOCHS} loss {tot/len(train_pairs):.3f} "

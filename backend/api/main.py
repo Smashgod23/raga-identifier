@@ -18,8 +18,18 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from predict import extract_features_from_audio, hz_to_note_name
-from predict_tdms import TDMSIndex
-import predict_essentia
+try:
+    from predict_tdms import TDMSIndex
+    import predict_essentia
+    TDMS_AVAILABLE = True
+except Exception as _tdms_exc:
+    # Essentia is a heavy native dependency. If its wheel fails to import on the
+    # host, keep the whole API up on the v1 path rather than crashing at startup;
+    # /predict-tdms then returns 503 and record/upload/youtube still work.
+    print(f"TDMS/Essentia import failed: {_tdms_exc!r}. /predict-tdms disabled; v1 endpoints still work.")
+    TDMSIndex = None
+    predict_essentia = None
+    TDMS_AVAILABLE = False
 
 app = FastAPI(title="Raga Identifier API")
 
@@ -58,6 +68,8 @@ print(f"Model loaded — {len(CLASSES)} ragas")
 # 480x14400 float32 array is ~28 MB. Index optional — if neither HF nor a
 # local copy is available, /predict-tdms returns 503 and v1 keeps working.
 def _load_tdms_index() -> Optional["TDMSIndex"]:
+    if not TDMS_AVAILABLE:
+        return None
     data_dir = os.path.join(BASE_DIR, "data")
     local_X = os.path.join(data_dir, "X_tdms_essfull_template.npy")
     local_y = os.path.join(data_dir, "y_tdms.npy")
@@ -94,7 +106,13 @@ def _predict_multi_segment(audio_path, tonic_override=None):
     clips. For >180s clips we detect Sa once on a representative middle window
     (or use the override), then extract features from three segments spaced
     across the recording and average the probabilities. Short clips get a
-    single full-file pass. Returns (avg_probs, tonic_hz)."""
+    single full-file pass.
+
+    Returns (avg_probs, tonic_hz, feature_vectors), where feature_vectors is the
+    list of raw pre-scaler vectors actually fed to the model, one per segment.
+    They are returned so the caller can log exactly what the model saw; scaled
+    values would be useless for retraining because the scaler is refit each
+    time."""
     import librosa
 
     try:
@@ -108,7 +126,7 @@ def _predict_multi_segment(audio_path, tonic_override=None):
         )
         probs = MODEL.predict_proba(SCALER.transform([features]))[0]
         # Report the user-supplied Sa as-is so the UI doesn't show an octave-shifted note.
-        return probs, (float(tonic_override) if tonic_override else detected_tonic)
+        return probs, (float(tonic_override) if tonic_override else detected_tonic), [features]
 
     # Long clip: anchor Sa once so per-segment features share the same cents reference.
     if tonic_override is not None and float(tonic_override) > 0:
@@ -127,6 +145,7 @@ def _predict_multi_segment(audio_path, tonic_override=None):
     ]
 
     all_probs = []
+    all_feats = []
     for offset, dur in segments:
         if offset + dur > total_dur:
             dur = max(30.0, total_dur - offset)
@@ -137,6 +156,7 @@ def _predict_multi_segment(audio_path, tonic_override=None):
                 audio_path, tonic_override=anchor_tonic, offset=offset, duration=dur
             )
             all_probs.append(MODEL.predict_proba(SCALER.transform([feats]))[0])
+            all_feats.append(feats)
         except (ValueError, Exception):
             continue
 
@@ -150,10 +170,11 @@ def _predict_multi_segment(audio_path, tonic_override=None):
                 duration=LONG_CLIP_THRESHOLD,
             )
             all_probs = [MODEL.predict_proba(SCALER.transform([feats]))[0]]
+            all_feats = [feats]
         except Exception:
             raise ValueError("Could not extract features from audio")
 
-    return np.mean(all_probs, axis=0), anchor_tonic
+    return np.mean(all_probs, axis=0), anchor_tonic, all_feats
 
 
 def _format_response(probs, tonic_hz, tonic_overridden):
@@ -170,6 +191,38 @@ def _format_response(probs, tonic_hz, tonic_overridden):
         "tonic_note": hz_to_note_name(tonic_hz) if tonic_hz else '',
         "tonic_overridden": bool(tonic_overridden),
     }
+
+
+# Bump this whenever extract_features_from_audio changes shape or meaning.
+# Without it, rows logged under different pipelines look identical and silently
+# poison any retraining that mixes them.
+FEATURE_VERSION = "pcd-v1"
+
+
+def _log_prediction(result, features, source):
+    """Write one row to `predictions` and attach its id to the response.
+
+    Best-effort by design: a logging outage must never turn a working
+    prediction into a 500.
+    """
+    try:
+        row = supabase.table("predictions").insert({
+            "source": source,
+            "predicted_raga": result["top_raga"],
+            "confidence": result["confidence"],
+            "top_k": result["predictions"],
+            # Raw, pre-scaler. The scaler is refit on every retrain, so scaled
+            # values would be frozen against a scaler that no longer exists.
+            "features": [[float(x) for x in f] for f in features] if features else None,
+            "feature_version": FEATURE_VERSION,
+            "n_segments": len(features) if features else 0,
+            "tonic_hz": result["tonic_hz"],
+            "tonic_overridden": result["tonic_overridden"],
+        }).execute()
+        result["prediction_id"] = row.data[0]["id"]
+    except Exception as exc:
+        print(f"prediction log failed: {exc!r}")
+    return result
 
 
 @app.get("/health")
@@ -204,8 +257,9 @@ async def predict_raga(
 
     override = tonic_hz if tonic_hz and tonic_hz > 0 else None
     try:
-        probs, used_tonic = _predict_multi_segment(tmp_path, tonic_override=override)
-        return _format_response(probs, used_tonic, tonic_overridden=override is not None)
+        probs, used_tonic, feats = _predict_multi_segment(tmp_path, tonic_override=override)
+        result = _format_response(probs, used_tonic, tonic_overridden=override is not None)
+        return _log_prediction(result, feats, source="upload")
     except ValueError as e:
         raise HTTPException(422, str(e))
     finally:
@@ -238,9 +292,18 @@ async def predict_raga_tdms(
     override = tonic_hz if tonic_hz and tonic_hz > 0 else None
     try:
         probs, used_tonic = predict_essentia.predict_top_k(TDMS_INDEX, tmp_path, tonic_override=override)
-        return _format_response(probs, used_tonic, tonic_overridden=override is not None)
+        result = _format_response(probs, used_tonic, tonic_overridden=override is not None)
+        # features=None on purpose: a TDMS is 14,400 floats, roughly a megabyte
+        # per row as JSON. Log the prediction, skip the vector.
+        return _log_prediction(result, features=None, source="tdms")
     except ValueError as e:
         raise HTTPException(422, str(e))
+    except Exception as e:
+        # Essentia is imported lazily inside the TDMS path, so a broken/missing
+        # native wheel surfaces here at call time, not at startup. Degrade to a
+        # clean 503 (v1 endpoints keep working) instead of a 500 stack trace.
+        print(f"TDMS inference failed: {e!r}")
+        raise HTTPException(503, "The TDMS model is temporarily unavailable. Try the standard prediction instead.")
     finally:
         os.unlink(tmp_path)
 
@@ -505,6 +568,25 @@ def _do_youtube_fetch(url, override):
             raise HTTPException(422, _youtube_error_detail(last_stderr))
 
         wav_files = globmod.glob(os.path.join(tmpdir, "audio.*"))
+
+        # Prefer the TDMS/Essentia model — far more accurate than v1 on real audio
+        # (70-75% vs ~17% top-1). On a single downloaded window it runs the
+        # single-window TDMS query. Fall back to v1 if TDMS is unavailable or
+        # errors on this clip, so the feature still returns a prediction.
+        if TDMS_INDEX is not None:
+            try:
+                probs, tonic = predict_essentia.predict_top_k(
+                    TDMS_INDEX, wav_files[0], tonic_override=override
+                )
+                result = _format_response(probs, tonic, tonic_overridden=override is not None)
+                # source stays "youtube" (the entry point) on both paths so the
+                # column still counts YouTube traffic. Which model served it is
+                # recoverable as source='youtube' AND features IS NULL, since
+                # only the v1 fallback below has a vector worth storing.
+                return _log_prediction(result, features=None, source="youtube")
+            except Exception as exc:
+                print(f"YouTube TDMS inference failed, falling back to v1: {exc!r}")
+
         try:
             features, tonic = extract_features_from_audio(
                 wav_files[0], tonic_override=override
@@ -514,7 +596,8 @@ def _do_youtube_fetch(url, override):
             raise HTTPException(422, _youtube_error_detail(last_stderr or "feature extraction failed"))
 
         used_tonic = override if override is not None else tonic
-        return _format_response(probs, used_tonic, tonic_overridden=override is not None)
+        result = _format_response(probs, used_tonic, tonic_overridden=override is not None)
+        return _log_prediction(result, [features], source="youtube")
 
 
 @app.post("/predict-youtube")
@@ -534,7 +617,11 @@ def predict_youtube(request: YouTubeRequest):
     vid = _youtube_video_id(url)
     cache_key = (vid, override) if vid else None
     if cache_key is not None and cache_key in _YT_CACHE:
-        return _YT_CACHE[cache_key]
+        # Strip the logged row id. Without this the second visitor to a cached
+        # link would attach their feedback to the first visitor's prediction row.
+        # The precomputed YT_EXAMPLES seed this same cache and carry no id, so
+        # both paths behave identically.
+        return {k: v for k, v in _YT_CACHE[cache_key].items() if k != "prediction_id"}
 
     # Single-flight: a second fetch arriving mid-fetch is told to wait rather than
     # piling onto the shared IP and throttling both into failure.
@@ -560,17 +647,24 @@ class FeedbackRequest(BaseModel):
     was_correct: bool
     confidence: float
     audio_filename: str = ""
+    prediction_id: str = ""
 
 @app.post("/feedback")
 async def submit_feedback(feedback: FeedbackRequest):
     try:
-        supabase.table("feedback").insert({
+        row = {
             "predicted_raga": feedback.predicted_raga,
             "actual_raga": feedback.actual_raga,
             "was_correct": feedback.was_correct,
             "confidence": feedback.confidence,
-            "audio_filename": feedback.audio_filename
-        }).execute()
+            "audio_filename": feedback.audio_filename,
+        }
+        # Only set when the client actually sent one. The column is a uuid FK,
+        # so writing "" would fail, and older clients that predate this field
+        # must keep working.
+        if feedback.prediction_id:
+            row["prediction_id"] = feedback.prediction_id
+        supabase.table("feedback").insert(row).execute()
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(500, str(e))

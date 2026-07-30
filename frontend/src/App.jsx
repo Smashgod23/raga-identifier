@@ -263,14 +263,19 @@ export default function App() {
   }
 
   const submitFeedback = (actualRaga, wasCorrect) => {
-    setFeedback('submitted')
+    // State moves on resolution, not before the request leaves. The previous
+    // version set 'submitted' up front and swallowed every error, so the UI
+    // claimed success even when the write never landed.
     axios.post(`${API_URL}/feedback`, {
       predicted_raga: predictions.top_raga,
       actual_raga: actualRaga,
       was_correct: wasCorrect,
       confidence: predictions.confidence,
-      audio_filename: audioId
-    }).catch(() => {})
+      audio_filename: audioId,
+      prediction_id: predictions.prediction_id
+    })
+      .then(() => setFeedback('submitted'))
+      .catch(err => { console.error('feedback failed', err); setFeedback('failed') })
   }
 
   const topRaga = predictions?.top_raga
@@ -517,6 +522,12 @@ export default function App() {
             <div style={styles.feedbackThanks}>Thanks for the feedback!</div>
           )}
 
+          {feedback === 'failed' && (
+            <div style={styles.feedbackFailed}>
+              That did not save. Check your connection and try again.
+            </div>
+          )}
+
           <button style={styles.resetBtn} onClick={reset}>Try another</button>
         </>
       )}
@@ -615,6 +626,7 @@ const styles = {
   dropdownItem: { padding: '10px 14px', fontSize: 14, color: '#3c3530', cursor: 'pointer', fontFamily: 'Georgia, serif' },
   dropdownEmpty: { padding: '10px 14px', fontSize: 13, color: '#9a9082', fontStyle: 'italic' },
   feedbackThanks: { textAlign: 'center', fontSize: 13, color: '#5a8a5a', padding: '16px', background: '#eef6ee', borderRadius: 10, marginBottom: 12 },
+  feedbackFailed: { textAlign: 'center', fontSize: 13, color: '#b91c1c', padding: '16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, marginBottom: 12 },
   resetBtn: { width: '100%', padding: '12px', borderRadius: 10, background: '#fff', border: '1px solid #e8e2da', fontSize: 14, color: '#9a9082', cursor: 'pointer', marginTop: 8 },
   error: { background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, padding: '12px 16px', fontSize: 13, color: '#b91c1c', marginTop: 12 },
   about: { marginTop: 40 },

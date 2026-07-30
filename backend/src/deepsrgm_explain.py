@@ -39,17 +39,41 @@ def tokenize_with_times(pitch_hz, tonic_hz, frame_period_s, ds):
     return toks[::ds], times[::ds]
 
 
-def contour_from_audio(audio_path):
+def contour_from_audio(audio_path, tonic_override=None):
     """Essentia pitch + tonic -> (tokens, times). Matches the training pipeline."""
     import essentia.standard as es
     import predict_essentia as pe
     audio = es.MonoLoader(filename=audio_path, sampleRate=pe.SR)()
-    tonic = pe.detect_tonic(audio)
+    tonic = pe.detect_tonic(audio, tonic_override=tonic_override)
     pitch, _ = es.PredominantPitchMelodia(frameSize=pe.MELODIA_FRAME, hopSize=pe.MELODIA_HOP)(audio)
     ds = max(1, round((pe.SR / pe.MELODIA_HOP) / 22.5))
     toks, times = tokenize_with_times(np.asarray(pitch, dtype=np.float64), tonic,
                                       pe.MELODIA_HOP / pe.SR, ds)
     return toks, times, float(tonic)
+
+
+def predict_full(ens, toks, n_windows=8, L=MAX_L):
+    """Ensemble prediction + energy-based uncertainty for one clip.
+    Returns (probs over classes, energy). Windows are random crops (fixed rng)
+    matching the calibrated deployment config (v3 x 3 seeds, 8 windows, L=1600)."""
+    import torch
+    rng = np.random.default_rng(7000)
+    W = []
+    for _ in range(n_windows):
+        if len(toks) <= L:
+            W.append(np.concatenate([toks, np.full(L - len(toks), PAD, dtype=np.int64)]))
+        else:
+            st = rng.integers(0, len(toks) - L)
+            W.append(toks[st:st + L])
+    x = torch.tensor(np.stack(W)).to(ens["dev"])
+    ps, es_ = [], []
+    with torch.no_grad():
+        for m in ens["models"]:
+            out = m(x)
+            lg = out[0] if isinstance(out, tuple) else out
+            ps.append(lg.softmax(1).mean(0).cpu().numpy())
+            es_.append(torch.logsumexp(lg, dim=1).mean().item())
+    return np.mean(ps, axis=0), float(np.mean(es_))
 
 
 def load_ensemble(tag="v3", seeds=(0, 1, 2), n_classes=40, with_frame_head=True):
