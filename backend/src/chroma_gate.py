@@ -24,12 +24,12 @@ Inputs are the .npz files written by preprocess_chroma.py. Tonic normalization
 happens here at load time, as a circular roll of the 60-bin axis so that bin 0
 is always Sa.
 
-DISCLOSED DEVIATION from "identical except the input": each recording is capped
-to a centered MAX_FRAMES window so the feature store fits in RAM on a 16 GB
-machine. The poc samples its windows from the full contour. Window *content* is
-unchanged (both models see 800 frames at a time) but chroma draws from a smaller
-pool of start positions, so it sees less of each recording. This can only
-disadvantage chroma, so it does not inflate the comparison.
+Recordings are memory-mapped rather than held in RAM. An earlier attempt to fix
+a 16 GB machine's swap thrashing by capping each recording to 8000 frames looked
+harmless on the training curve (loss even improved) and cost 32 points of test
+top-1, 57.5 -> 25.0 on seed 0, by halving the pool of window start positions and
+letting the model memorize the overlap. Memory mapping keeps every frame
+reachable at near-zero resident cost, so window diversity matches the poc's.
 
 Run from backend/:
   source venv/bin/activate
@@ -47,6 +47,15 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(BASE, "data")
 CHROMA_DIR = os.path.join(DATA, "chroma")
 REPORT = os.path.join(DATA, "chroma_gate_report.txt")
+# Uncompressed per-recording feature matrices, memory-mapped at training time.
+# Holding all 480 in RAM took ~880 MB and drove a 16 GB machine into swap; an
+# 8000-frame cap fixed the RAM but halved the pool of window start positions and
+# cost 32 points of top-1 (57.5 -> 25.0 on seed 0) to overfitting. Memory
+# mapping keeps every frame available while the resident set stays near zero,
+# because only the 800-frame windows actually read get paged in.
+MMAP_DIR = os.path.join(DATA, "chroma_mm")
+MMAP_VERSION = 1                      # bump when the stored transform changes
+MANIFEST = os.path.join(MMAP_DIR, f"manifest_v{MMAP_VERSION}.json")
 # Each seed costs about 45 minutes. Completed seeds are cached here and skipped
 # on a rerun, so an interrupted run resumes instead of starting over.
 SEED_CACHE = os.path.join(DATA, "chroma_gate_seeds.json")
@@ -62,12 +71,6 @@ CENTS_PER_BIN = 1200.0 / pc.BINS_PER_OCTAVE
 
 SEQ_LEN = 800                         # ~35 s at 22.73 fps
 PER_REC = 60                          # training windows per recording
-# Cap the frames held per recording. Uncapped this holds ~880 MB, which on a
-# 16 GB machine pushes the whole system into swap and slowed epochs from 99 s to
-# 1500 s. A centered 8000-frame window is ~5.9 minutes, still 7200 distinct
-# start positions for 800-frame windows, and the model never sees more than
-# SEQ_LEN at a time anyway. Costs window diversity, not window content.
-MAX_FRAMES = 8000
 EVAL_WINDOWS = 20
 EPOCHS = 30
 BATCH = 256
@@ -82,12 +85,42 @@ def tonic_bin(tonic_hz):
 
 
 def load_recordings():
-    """Load every chroma npz, tonic-normalize, return (features, labels).
+    """Return (memory-mapped features, labels) for every chroma recording.
 
-    Each feature array is (T, 61) float16: 60 tonic-rolled chroma bins plus a
+    Each feature file is (T, 61) float16: 60 tonic-rolled chroma bins plus a
     per-recording z-scored log-energy channel. Energy is z-scored per recording
     on purpose — absolute loudness is a recording fingerprint, and Phase 4
     already showed what happens when the model can memorize those.
+
+    The rolled-and-z-scored matrices are written once to MMAP_DIR as
+    uncompressed .npy (npz is compressed and cannot be mapped), then opened
+    lazily. Subsequent runs skip the conversion and also skip decompression.
+    """
+    os.makedirs(MMAP_DIR, exist_ok=True)
+    entries = json.load(open(MANIFEST)) if os.path.exists(MANIFEST) else None
+    if entries is not None and not all(
+            os.path.exists(os.path.join(MMAP_DIR, e["mm"])) for e in entries):
+        print("  manifest references missing files, rebuilding", flush=True)
+        entries = None
+
+    if entries is None:
+        entries = build_mmap_cache()
+
+    # mmap_mode='r' hands back a lazy view. Nothing is read until gather()
+    # slices a window, so the resident set stays tiny no matter how many frames
+    # each recording has.
+    feats = [np.load(os.path.join(MMAP_DIR, e["mm"]), mmap_mode="r")
+             for e in entries]
+    labels = np.array([e["label"] for e in entries])
+    return feats, labels
+
+
+def build_mmap_cache():
+    """One-time conversion of the compressed npz set into mappable .npy files.
+
+    Writes a manifest so later runs never touch the npz files at all. Reading a
+    member of an npz decompresses the whole array, so without the manifest even
+    a cache hit would pay full decompression on every recording every run.
     """
     classes = json.load(open(os.path.join(DATA, "classes.json")))
     name_to_label = {n: i for i, n in enumerate(classes)}
@@ -99,37 +132,38 @@ def load_recordings():
                 paths.append(os.path.join(root, f))
     paths.sort()
 
-    feats, labels, skipped = [], [], 0
-    for p in paths:
+    entries, skipped = [], 0
+    t0 = time.time()
+    for i, p in enumerate(paths, 1):
         z = np.load(p, allow_pickle=True)
         raga = str(z["raga"])
-        if raga not in name_to_label:
-            skipped += 1
-            continue
-        ch = z["chroma"].astype(np.float32)          # (T, 60), L1-normalized
-        en = z["energy"].astype(np.float32)          # (T,)
-        if len(ch) < SEQ_LEN // 4:
+        ch = z["chroma"]
+        if raga not in name_to_label or ch.shape[0] < SEQ_LEN // 4:
             skipped += 1
             continue
 
-        ch = np.roll(ch, -tonic_bin(float(z["tonic"])), axis=1)
+        name = (f"v{MMAP_VERSION}_"
+                + os.path.relpath(p, CHROMA_DIR).replace(os.sep, "__")
+                .replace(".npz", ".npy"))
+        out = os.path.join(MMAP_DIR, name)
+        if not os.path.exists(out):
+            ch = ch.astype(np.float32)               # (T, 60), L1-normalized
+            en = z["energy"].astype(np.float32)      # (T,)
+            ch = np.roll(ch, -tonic_bin(float(z["tonic"])), axis=1)
+            sd = en.std()
+            en = (en - en.mean()) / (sd if sd > 1e-6 else 1.0)
+            np.save(out,
+                    np.concatenate([ch, en[:, None]], axis=1).astype(np.float16))
+        entries.append({"mm": name, "label": name_to_label[raga]})
+        if i % 120 == 0:
+            print(f"    converted {i}/{len(paths)} ({time.time()-t0:.0f}s)",
+                  flush=True)
 
-        # Centered cap, matching the middle-window convention the contour
-        # builder uses. Applied before z-scoring so the energy statistics come
-        # from the frames actually kept.
-        if len(ch) > MAX_FRAMES:
-            mid, half = len(ch) // 2, MAX_FRAMES // 2
-            ch, en = ch[mid - half: mid + half], en[mid - half: mid + half]
-
-        sd = en.std()
-        en = (en - en.mean()) / (sd if sd > 1e-6 else 1.0)
-
-        feats.append(np.concatenate([ch, en[:, None]], axis=1).astype(np.float16))
-        labels.append(name_to_label[raga])
-
-    if skipped:
-        print(f"  skipped {skipped} recordings (unknown raga or too short)")
-    return feats, np.array(labels)
+    with open(MANIFEST, "w") as f:
+        json.dump(entries, f)
+    print(f"  built {len(entries)} mappable feature files"
+          + (f", skipped {skipped}" if skipped else ""), flush=True)
+    return entries
 
 
 def window_index(rec_ids, per, feats, rng):
@@ -253,7 +287,7 @@ def config_fingerprint():
     """
     return {"seq_len": SEQ_LEN, "per_rec": PER_REC, "eval_windows": EVAL_WINDOWS,
             "epochs": EPOCHS, "batch": BATCH, "n_chroma": N_CHROMA,
-            "max_frames": MAX_FRAMES,
+            "frames": "full", "mmap_version": MMAP_VERSION,
             "bins_per_octave": pc.BINS_PER_OCTAVE, "hop": pc.HOP, "sr": pc.SR}
 
 
@@ -278,7 +312,9 @@ def main():
     print(f"[{time.strftime('%H:%M:%S')}] loading chroma cache...", flush=True)
     feats, labels = load_recordings()
     mb = sum(f.nbytes for f in feats) / (1024 ** 2)
-    print(f"  {len(feats)} recordings in memory, {mb:.0f} MB", flush=True)
+    frames = sum(len(f) for f in feats)
+    print(f"  {len(feats)} recordings memory-mapped, {mb:.0f} MB on disk, "
+          f"{frames} frames ({frames/(pc.SR/pc.HOP)/3600:.1f} h)", flush=True)
 
     done = load_seed_cache()
     if done:
@@ -303,9 +339,8 @@ def main():
         "Controlled swap of deepsrgm_poc.py: same split, same windows, same",
         "architecture, same schedule. Only the input representation differs.",
         "",
-        f"Disclosed deviation: recordings capped to a centered {MAX_FRAMES}-frame",
-        "window (RAM limit). Chroma draws windows from a smaller pool than the",
-        "poc does, which can only disadvantage chroma, never inflate it.",
+        "Full recordings, memory-mapped. An earlier 8000-frame cap (a RAM",
+        "workaround) cost 32 points of top-1 to overfitting and was reverted.",
         "",
         f"seeds {SEEDS}",
         f"top-1 per seed: {[round(x, 1) for x in t1s]}",

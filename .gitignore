@@ -26,6 +26,8 @@ backend/data/train_v4_report.txt
 backend/data/melspec/
 # Phase 16 CQT chromagrams, one npz per recording, ~750 MB total
 backend/data/chroma/
+# Uncompressed memory-mappable copies of the above, ~900 MB, rebuildable
+backend/data/chroma_mm/
 backend/data/ast_meta.json
 backend/data/train_v5_report.txt
 backend/data/tonic_candidates.npz

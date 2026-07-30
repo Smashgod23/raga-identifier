@@ -88,11 +88,23 @@ The other known limit is label quality. The 194 evaluation labels come from an a
 
 ### 2026-07-29: the gate produces a number, and the chromagram hint turns out to be a pointer
 
-The chroma sequence model finished its first seed: **57.5% top-1, 86.2% top-5** on the in-distribution split, against the pitch-token model's 89.2 / 97.9 on the identical protocol. Two more seeds are running for a proper mean.
+The chroma sequence model finished a first seed: **57.5% top-1, 86.2% top-5** on the in-distribution split, against the pitch-token model's 89.2 / 97.9 on the identical protocol.
 
 That is a split decision and I want to be precise about it. It is nothing like the Phase 4 mel-spectrogram collapse at 11.5%, so the chromagram genuinely carries raga information, which was the question the gate was built to answer. But it is roughly 32 points below the pitch-token model on top-1, so chroma is not a replacement for what I already have. The training loss was still falling at epoch 30, so it may be undertrained on a schedule I copied from the token model specifically to keep the swap controlled.
 
-A detour worth recording because it cost most of an afternoon. The run slowed from 99 seconds per epoch to 1536, a 15x degradation, and my first instinct was that something was wrong with the model. It was not. The feature store held 877 MB, and on a 16 GB machine alongside two IDEs and a macOS update that had been running for fifteen hours, the system hit 11% free memory and 18 GB of swap. It was thrashing, not computing. Killing the job took free memory straight back to 70%, which told me my own footprint was a bigger contributor than I had assumed. I capped each recording to a centered 8000-frame window, which took the store to 421 MB, and epochs came back at 64 seconds. Loss at epoch 10 was 2.779 against 2.766 for the uncapped run, so the cap cost nothing in learning. I disclosed the cap in the report anyway, because it means chroma draws windows from a smaller pool than the token baseline does. That can only disadvantage chroma, never inflate it.
+Then I broke it, and the way I broke it is the most useful thing in this entry.
+
+The run had slowed from 99 seconds per epoch to 1536, a 15x degradation, and my first instinct was that something was wrong with the model. It was not. The feature store held 877 MB, and on a 16 GB machine alongside two IDEs and a macOS update that had been running for fifteen hours, the system hit 11% free memory and 18 GB of swap. It was thrashing, not computing. Killing the job took free memory straight back to 70%, which told me my own footprint was a bigger contributor than I had assumed.
+
+So I capped each recording to a centered 8000-frame window. The store dropped to 421 MB, epochs came back at 64 seconds, and I checked the training loss to confirm nothing had been lost: 2.779 at epoch 10 against 2.766 for the uncapped run. Essentially identical. I wrote in this log that the cap cost nothing.
+
+It cost 32 points. The same seed 0, same split, same architecture, scored **25.0% top-1 / 73.8% top-5** with the cap against 57.5 / 86.2 without it. And the training loss had gone *down*, not up: 1.186 at epoch 30 against 1.461 uncapped. The model fit its training data better and generalized far worse, which is the signature of overfitting. Capping to 8000 frames roughly halved the pool of distinct window start positions, so the 60 training windows per recording overlapped much more and the model memorized them.
+
+What stings is that this is the identical mistake the Phase 4 mel-spectrogram CNN made, 86% train accuracy against validation at chance, and I walked into it by trusting a training curve to tell me about generalization. A training loss cannot answer that question. I already knew that and did it anyway because the two curves looked the same at epoch 10.
+
+The fix is to stop trading window diversity for memory at all. Instead of capping, I now write each recording's tonic-rolled feature matrix once as an uncompressed .npy and memory-map it, so every frame stays reachable while the resident set stays near zero, because only the 800-frame windows actually read get paged in. A manifest records the labels so later runs never touch the compressed files, which also removes decompression from startup. Window diversity now matches the pitch-token baseline exactly, which is what the controlled comparison needed in the first place.
+
+I abandoned the capped configuration rather than spend another 90 minutes measuring the mean of a config that only ever existed as a workaround. The 25.0 stays in the record as evidence that the cap was harmful, not as a result about chromagrams.
 
 Then Prof. Arora sent the MADHAV Lab outcomes page, and it recontextualized his original suggestion completely. Figure 1 of his group's 2025 paper, "Recognizing Ornaments in Vocal Indian Art Music with Active Annotation" (Kumar, Singh, Arora), is chromagram and pitch-contour representations of six ornaments. So "try chromagrams" was not generic advice. It was a pointer at using chromagrams to see ornamentation.
 
