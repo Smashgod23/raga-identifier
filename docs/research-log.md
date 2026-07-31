@@ -157,7 +157,13 @@ And then the honest part. The Essentia tonic detector already in the pipeline ge
 
 That does not close the question, though. The 10-point oracle gap is not asking for a marginally different detector, it is asking for better hypothesis selection. What matters is whether chroma is wrong on the same recordings Essentia is wrong on. If the errors are uncorrelated then using the chroma template to score Essentia's candidate list, instead of replacing it, should beat both. That is the next experiment and it is cheap.
 
-Result so far, part two: the sequence model gate is still training as I write this (about 45 minutes per seed, three seeds). I will add the number when it lands, including if it is bad.
+Result, part two: the gate finished at **67.1% +/- 3.9 top-1, 87.5% +/- 1.0 top-5**, against the pitch-token model's 89.2 / 97.9 on the identical protocol. Individual seeds were 63.7, 65.0 and 72.5.
+
+That is a split decision and I want to be exact about it. It is nowhere near the Phase 4 mel-spectrogram collapse at 11.46%, so a chromagram genuinely encodes raga identity, which is the question the gate existed to answer. But it is 22 points below pitch tokens on top-1, so it is not a replacement, and I am not going to dress that up. The only remaining case for it is complementarity: whether it gets right the recordings the token model gets wrong. That is a separate experiment and I have not run it.
+
+The seed spread is worth noting on its own. 63.7 to 72.5 across three runs of the same configuration, on 80 held-out recordings, is a reminder that any single number from this setup is close to meaningless. My very first run of this model gave 57.5 and I nearly wrote that down as the answer.
+
+So the honest summary of the chromagram direction: the representation works, the drone-based tonic detector ties the existing one rather than beating it, and neither is currently worth shipping. The suggestion was worth following and it did not pan out as a win. That is a normal outcome and it is now in the leaderboard as such.
 
 ### 2026-07-20: canonical results table
 

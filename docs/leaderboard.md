@@ -23,6 +23,11 @@ Note on deployment status: the live API is served from the Hugging Face Space re
 | v1 MLP (pitch-distribution features) | 84.4 | - | Held-out split on CompMusic features |
 | TDMS + 1-NN | 75.62 | 91.17 | CMD 480 recordings, leave-one-out, 7x90s queries |
 | DeepSRGM-style bi-LSTM + attention (3 seeds) | 89.2 +/- 1.2 | 97.9 | 3-seed recording-aware CV on expert pitch, CMD 480 |
+| Chromagram + same bi-LSTM (3 seeds) | 67.1 +/- 3.9 | 87.5 +/- 1.0 | Controlled swap of the row above: identical split, windows, architecture and schedule, only the input changes |
+| Mel-spectrogram CNN (Phase 4, ruled out) | 11.46 | - | Same corpus, per-recording vote |
+| Random baseline | 2.5 | - | 40 classes |
+
+Chromagram note: the input is a 60-bin tonic-normalised CQT profile at 22.73 fps, swapped in for the pitch-token embedding with everything else held fixed, so the gap is attributable to the representation. It clears the Phase 4 spectrogram collapse by a wide margin, which answers the question the experiment was built to ask, but sits 22 points below pitch tokens on top-1 and is not a replacement. Any remaining value is in whether it fails on different recordings than the token model, which is untested. Seed spread was wide (63.7 / 65.0 / 72.5) at n=80 held-out recordings, so single-seed numbers from this setup mean little.
 
 ## Open-set (unseen-raga rejection): AUROC separating seen vs unseen ragas
 
